@@ -3,3 +3,4 @@ uvicorn
 numpy
 pickle-mixin
 joblib
+scikit-learn
