@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 import joblib  # Changed from pickle to joblib
 import numpy as np
+import pandas as pd  # ADDED - Critical for feature names
 from datetime import datetime
 import os
 
@@ -112,7 +113,7 @@ def create_features(date_str: str, city: str, feature_names: list):
         cross_city_data = LATEST_PRICES['Lahore']
         cross_city_name = 'Lahore'
     
-    # Calculate all features
+    # Calculate all features - match EXACTLY what predict.py does
     features_dict = {
         # Lags
         'lag_1': city_prices['lag_1'],
@@ -139,19 +140,19 @@ def create_features(date_str: str, city: str, feature_names: list):
         'ema_7': city_prices['ema_7'],
         'ema_14': city_prices['ema_14'],
         
-        # Percentage changes
-        'pct_change_1': ((city_prices['close'] - city_prices['lag_1']) / city_prices['lag_1']) * 100,
-        'pct_change_7': ((city_prices['close'] - city_prices['lag_7']) / city_prices['lag_7']) * 100,
+        # Percentage changes - using CLOSE price
+        'pct_change_1': ((city_prices['close'] - city_prices['lag_1']) / city_prices['lag_1']) * 100 if city_prices['lag_1'] != 0 else 0.0,
+        'pct_change_7': ((city_prices['close'] - city_prices['lag_7']) / city_prices['lag_7']) * 100 if city_prices['lag_7'] != 0 else 0.0,
         
-        # Momentum
-        'momentum_3': ((city_prices['close'] - city_prices['lag_3']) / city_prices['lag_3']) * 100,
-        'momentum_7': ((city_prices['close'] - city_prices['lag_7']) / city_prices['lag_7']) * 100,
+        # Momentum - using CLOSE price
+        'momentum_3': ((city_prices['close'] - city_prices['lag_3']) / city_prices['lag_3']) * 100 if city_prices['lag_3'] != 0 else 0.0,
+        'momentum_7': ((city_prices['close'] - city_prices['lag_7']) / city_prices['lag_7']) * 100 if city_prices['lag_7'] != 0 else 0.0,
         
         # High-low difference
         'high_low_diff': city_prices['high'] - city_prices['low'],
         
         # Volatility
-        'volatility_7': city_prices['std_7'] / city_prices['ma_7'] * 100,
+        'volatility_7': (city_prices['std_7'] / city_prices['ma_7'] * 100) if city_prices['ma_7'] != 0 else 0.0,
         
         # Time features
         'day_of_week': target_date.weekday(),
@@ -163,25 +164,18 @@ def create_features(date_str: str, city: str, feature_names: list):
         'trend_7': 1.0 if city_prices['close'] > city_prices['lag_7'] else 0.0,
         'trend_14': 1.0 if city_prices['ma_7'] > city_prices['ma_14'] else 0.0,
         
-        # Cross-city lag (Rawalpindi_lag1 or Lahore_lag1)
-        'Rawalpindi_lag1': cross_city_data['lag_1'],
-        'Lahore_lag1': cross_city_data['lag_1'],
+        # Cross-city lag - THE CRITICAL PART
+        f'{cross_city_name}_lag1': cross_city_data['lag_1'],
     }
     
-    # Build feature array in exact order
+    # Build feature array in EXACT order from feature_names
     feature_array = []
     for fname in feature_names:
         if fname in features_dict:
             feature_array.append(features_dict[fname])
         else:
-            # Handle alternative cross-city names
-            if fname == 'Rawalpindi_lag1' and city == 'Rawalpindi':
-                feature_array.append(cross_city_data['lag_1'])
-            elif fname == 'Lahore_lag1' and city == 'Lahore':
-                feature_array.append(cross_city_data['lag_1'])
-            else:
-                print(f"⚠️ Missing feature: {fname}, using 0.0")
-                feature_array.append(0.0)
+            print(f"⚠️ CRITICAL: Missing feature '{fname}' for {city}, using 0.0")
+            feature_array.append(0.0)
     
     return np.array([feature_array])
 
