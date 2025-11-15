@@ -1,5 +1,4 @@
-from fastapi import FastAPI, HTTPException, Security, Depends, Query
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import FastAPI, HTTPException, Query
 import os
 import pickle
 import numpy as np
@@ -12,21 +11,10 @@ from datetime import datetime
 app = FastAPI(title="Smart Poultry Prediction API")
 
 # =====================================================
-#                 API KEY SECURITY
-# =====================================================
-API_KEY = os.getenv("API_KEY", "mysecretkey123")  # default if not set in Render
-api_key_header = APIKeyHeader(name="X-API-Key")
-
-def check_key(key: str = Security(api_key_header)):
-    if key != API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    return key
-
-# =====================================================
 #                LOAD PICKLED MODELS
 # =====================================================
 models = {}
-model_file = "lahore_rawalpindi_models.pkl"  # or joblib
+model_file = "lahore_rawalpindi_models.pkl"  # your .pkl file
 if not os.path.exists(model_file):
     raise Exception(f"❌ Model file '{model_file}' not found in repo!")
 
@@ -38,7 +26,6 @@ print(f"✅ Loaded models: {list(models.keys())}")
 # =====================================================
 #                MOCK LATEST HISTORICAL DATA
 # =====================================================
-# Replace this with real historical data if you have a CSV/DB
 latest_data = {
     "Rawalpindi": {"Open": 350.00, "Close": 350.00, "Date": "2025-11-11"},
     "Lahore": {"Open": 355.00, "Close": 357.00, "Date": "2025-11-11"},
@@ -58,15 +45,12 @@ def home():
 @app.get("/predict_date")
 def predict_date(
     city: str = Query(..., description="City name, e.g., Lahore or Rawalpindi"),
-    date: str = Query(..., description="Date in YYYY-MM-DD format"),
-    api_key: str = Depends(check_key)
+    date: str = Query(..., description="Date in YYYY-MM-DD format")
 ):
     """
     Predict Open and Close prices for a city on a given date.
-
     Example:
     GET /predict_date?city=Lahore&date=2025-02-20
-    Header: X-API-Key: your_api_key_here
     """
     city = city.title()  # normalize input
     if city not in models:
@@ -82,8 +66,9 @@ def predict_date(
 
     city_models = models[city]  # expects dict: {"Open": model, "Close": model, "metrics": {...}}
 
-    # Here we mock features for the date (replace with your real feature engineering)
-    X = np.array([[0, 0, 0, 0]])  # dummy features, replace with your actual feature vector
+    # Mock features (replace with your real feature engineering)
+    X = np.array([[0, 0, 0, 0]])  # dummy features
+
     open_model = city_models.get("Open")
     close_model = city_models.get("Close")
     metrics = city_models.get("metrics", {})
@@ -107,5 +92,6 @@ def predict_date(
             "Expected_Change": round(expected_change, 2)
         },
         "latest_data": latest,
-        "metrics": metrics
+        "metrics": metrics,
+        "api_key_used": "secretapikey123"  # automatically included
     }
