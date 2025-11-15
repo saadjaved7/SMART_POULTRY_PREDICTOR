@@ -1,97 +1,154 @@
-from fastapi import FastAPI, HTTPException, Query
-import os
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security.api_key import APIKeyHeader
 import pickle
 import numpy as np
-import pandas as pd
 from datetime import datetime
+import os
 
 # =====================================================
-#                 FASTAPI APP SETUP
+# FASTAPI APP SETUP
 # =====================================================
 app = FastAPI(title="Smart Poultry Prediction API")
 
 # =====================================================
-#                LOAD PICKLED MODELS
+# API KEY SECURITY
+# =====================================================
+API_KEY = "mysecretkey123"
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+def check_key(key: str = Security(api_key_header)):
+    if key != API_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    return key
+
+# =====================================================
+# LOAD PKL MODELS
 # =====================================================
 models = {}
-model_file = "lahore_rawalpindi_models.pkl"  # your .pkl file
+model_file = "lahore_rawalpindi_models.pkl"
+
 if not os.path.exists(model_file):
-    raise Exception(f"❌ Model file '{model_file}' not found in repo!")
+    raise Exception(f"❌ Model file '{model_file}' not found!")
 
-with open(model_file, "rb") as f:
-    models = pickle.load(f)
-
-print(f"✅ Loaded models: {list(models.keys())}")
-
-# =====================================================
-#                MOCK LATEST HISTORICAL DATA
-# =====================================================
-latest_data = {
-    "Rawalpindi": {"Open": 350.00, "Close": 350.00, "Date": "2025-11-11"},
-    "Lahore": {"Open": 355.00, "Close": 357.00, "Date": "2025-11-11"},
-}
+try:
+    with open(model_file, 'rb') as f:
+        models = pickle.load(f)
+    print(f"✅ Loaded models: {list(models.keys())}")
+except Exception as e:
+    raise Exception(f"❌ Failed to load models: {str(e)}")
 
 # =====================================================
-#                        ROUTES
+# HELPER: CREATE DUMMY FEATURES
 # =====================================================
+def create_features(date_str: str):
+    """
+    Creates dummy features for prediction.
+    WARNING: This uses dummy values! For accurate predictions,
+    you need real lag/MA/EMA features from historical data.
+    """
+    target_date = datetime.strptime(date_str, "%Y-%m-%d")
+    
+    # Time features
+    day_of_week = target_date.weekday()
+    month = target_date.month
+    day = target_date.day
+    
+    # Dummy features (replace with real calculations)
+    # You need to match the exact number of features your model expects
+    features = [
+        day_of_week,
+        month,
+        day,
+        350.0,  # lag_1 (dummy)
+        348.0,  # lag_7 (dummy)
+        349.5,  # ma_7 (dummy)
+        349.2,  # ema_7 (dummy)
+        0.5,    # momentum (dummy)
+        1.2,    # volatility (dummy)
+        1.0,    # trend (dummy)
+    ]
+    
+    return np.array([features])
 
+# =====================================================
+# ROUTES
+# =====================================================
 @app.get("/")
 def home():
     return {
-        "message": "Welcome to Smart Poultry Prediction API!",
-        "available_cities": list(models.keys())
+        "message": "🐔 Smart Poultry Prediction API",
+        "available_cities": list(models.keys()),
+        "endpoints": {
+            "predict": "/predict_date?city=Lahore&date=2025-02-20"
+        },
+        "note": "Add header: X-API-Key: mysecretkey123"
     }
 
 @app.get("/predict_date")
 def predict_date(
-    city: str = Query(..., description="City name, e.g., Lahore or Rawalpindi"),
-    date: str = Query(..., description="Date in YYYY-MM-DD format")
+    city: str,
+    date: str,
+    api_key: str = Depends(check_key)
 ):
     """
-    Predict Open and Close prices for a city on a given date.
-    Example:
-    GET /predict_date?city=Lahore&date=2025-02-20
+    Predict poultry prices for a given city and date.
+    
+    Example: /predict_date?city=Lahore&date=2025-02-20
+    Header: X-API-Key: mysecretkey123
     """
-    city = city.title()  # normalize input
-    if city not in models:
+    
+    # Find city (case-insensitive)
+    city_key = None
+    for key in models.keys():
+        if key.lower() == city.lower():
+            city_key = key
+            break
+    
+    if not city_key:
         raise HTTPException(
             status_code=404,
             detail=f"City '{city}' not found. Available: {list(models.keys())}"
         )
-
+    
+    # Validate date
     try:
-        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format! Use YYYY-MM-DD.")
-
-    city_models = models[city]  # expects dict: {"Open": model, "Close": model, "metrics": {...}}
-
-    # Mock features (replace with your real feature engineering)
-    X = np.array([[0, 0, 0, 0]])  # dummy features
-
-    open_model = city_models.get("Open")
-    close_model = city_models.get("Close")
-    metrics = city_models.get("metrics", {})
-
-    if open_model is None or close_model is None:
-        raise HTTPException(status_code=500, detail="City models incomplete (Open/Close missing).")
-
-    # Predictions
-    predicted_open = float(open_model.predict(X)[0])
-    predicted_close = float(close_model.predict(X)[0])
-    expected_change = predicted_close - predicted_open
-
-    latest = latest_data.get(city, {"Open": None, "Close": None, "Date": None})
-
-    return {
-        "city": city,
-        "date": str(target_date),
-        "prediction": {
-            "Open": round(predicted_open, 2),
-            "Close": round(predicted_close, 2),
-            "Expected_Change": round(expected_change, 2)
-        },
-        "latest_data": latest,
-        "metrics": metrics,
-        "api_key_used": "secretapikey123"  # automatically included
-    }
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid date format. Use YYYY-MM-DD (e.g., 2025-02-20)"
+        )
+    
+    # Get city models
+    city_models = models[city_key]
+    
+    # ⚠️ CRITICAL FIX: Access nested dictionary
+    open_model = city_models['Open']
+    close_model = city_models['Close']
+    
+    # Create features
+    X = create_features(date)
+    
+    # Make predictions
+    try:
+        predicted_open = float(open_model.predict(X)[0])
+        predicted_close = float(close_model.predict(X)[0])
+        change = predicted_close - predicted_open
+        
+        return {
+            "city": city_key,
+            "date": date,
+            "predictions": {
+                "open": round(predicted_open, 2),
+                "close": round(predicted_close, 2),
+                "expected_change": round(change, 2)
+            },
+            "currency": "PKR",
+            "warning": "⚠️ Using simplified features. Accuracy may vary from training performance."
+        }
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction error: {str(e)}"
+        )
