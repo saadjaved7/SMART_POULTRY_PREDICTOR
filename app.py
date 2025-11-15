@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-import pickle
+import joblib  # Changed from pickle to joblib
 import numpy as np
 from datetime import datetime
 import os
@@ -71,20 +71,26 @@ LATEST_PRICES = {
 }
 
 # =====================================================
-# LOAD MODELS
+# LOAD MODELS (USING JOBLIB)
 # =====================================================
 models = {}
-model_file = "lahore_rawalpindi_models.pkl"
+model_file = "lahore_rawalpindi_models.joblib"  # Changed to .joblib
 
 if not os.path.exists(model_file):
-    raise Exception(f"❌ Model file not found!")
+    raise Exception(f"❌ Model file not found: {model_file}")
 
 try:
-    with open(model_file, 'rb') as f:
-        models = pickle.load(f)
+    models = joblib.load(model_file)  # Using joblib.load
     print(f"✅ Loaded models: {list(models.keys())}")
+    
+    # Print model details for debugging
+    for city in models:
+        print(f"\n📍 {city}")
+        for target in ['Open', 'Close']:
+            if target in models[city]:
+                print(f"  {target}: {models[city][target]['type']} | R2: {models[city][target]['r2']:.4f}")
 except Exception as e:
-    raise Exception(f"❌ Failed to load: {str(e)}")
+    raise Exception(f"❌ Failed to load models: {str(e)}")
 
 # =====================================================
 # CREATE ALL 30 FEATURES IN CORRECT ORDER
@@ -200,6 +206,12 @@ def home():
                 "close": LATEST_PRICES['Lahore']['close']
             }
         },
+        "model_info": {
+            city: {
+                "Open": models[city]['Open']['type'],
+                "Close": models[city]['Close']['type']
+            } for city in models.keys()
+        },
         "example": "https://smart-poultry-predictor-6gca.onrender.com/predict_date?city=Lahore&date=2025-11-18&api_key=mysecretkey123"
     }
 
@@ -216,7 +228,7 @@ def predict_date(city: str, date: str, api_key: str):
             break
     
     if not city_key:
-        raise HTTPException(status_code=404, detail=f"City not found")
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found. Available: {list(models.keys())}")
     
     try:
         datetime.strptime(date, "%Y-%m-%d")
@@ -270,5 +282,48 @@ def predict_date(city: str, date: str, api_key: str):
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
+
+@app.get("/debug")
+def debug_features(city: str, date: str, api_key: str):
+    """Debug endpoint to check feature generation"""
+    
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
+    city_key = None
+    for key in models.keys():
+        if key.lower() == city.lower():
+            city_key = key
+            break
+    
+    if not city_key:
+        raise HTTPException(status_code=404, detail=f"City not found")
+    
+    try:
+        open_data = models[city_key]['Open']
+        close_data = models[city_key]['Close']
+        
+        X_open = create_features(date, city_key, open_data['features'])
+        X_close = create_features(date, city_key, close_data['features'])
+        
+        return {
+            "city": city_key,
+            "date": date,
+            "open_features": {
+                "expected": open_data['features'],
+                "count": len(open_data['features']),
+                "values": X_open[0].tolist(),
+                "first_5": dict(zip(open_data['features'][:5], X_open[0][:5].tolist()))
+            },
+            "close_features": {
+                "expected": close_data['features'],
+                "count": len(close_data['features']),
+                "values": X_close[0].tolist(),
+                "first_5": dict(zip(close_data['features'][:5], X_close[0][:5].tolist()))
+            },
+            "latest_prices": LATEST_PRICES[city_key]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Debug error: {str(e)}")
