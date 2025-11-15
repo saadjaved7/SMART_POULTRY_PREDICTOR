@@ -17,7 +17,7 @@ DATA_FILE = "agbro_combined_cleaned.csv"
 if not os.path.exists(DATA_FILE):
     raise Exception(f"❌ Data file not found: {DATA_FILE}")
 
-df = pd.read_csv(DATA_FILE, parse_dates=['date'])
+df = pd.read_csv(DATA_FILE, parse_dates=['Date'])
 
 # =====================================================
 # LOAD MODELS
@@ -183,3 +183,4 @@ def predict_date(city: str, date: str, api_key: str):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
