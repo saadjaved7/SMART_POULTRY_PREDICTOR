@@ -1,7 +1,8 @@
 fastapi
-uvicorn
+uvicorn[standard]
 numpy
 pickle-mixin
 joblib
 scikit-learn
 pandas
+
