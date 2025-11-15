@@ -4,24 +4,30 @@ import pickle
 import numpy as np
 import os
 
-# ========== FASTAPI SETUP ==========
+# =====================================================
+#                 FASTAPI APP SETUP
+# =====================================================
 app = FastAPI(title="Smart Poultry Prediction API")
 
-# ========== API KEY SETUP ==========
-API_KEY = os.getenv("API_KEY") # you can change this if needed
+# =====================================================
+#                 API KEY SECURITY
+# =====================================================
+API_KEY = os.getenv("API_KEY")  # Set this in Render Environment
 api_key_header = APIKeyHeader(name="X-API-Key")
 
 def check_key(key: str = Security(api_key_header)):
+    if API_KEY is None:
+        raise HTTPException(status_code=500, detail="API_KEY not set in environment!")
     if key != API_KEY:
         raise HTTPException(status_code=403, detail="Unauthorized")
     return key
 
-# ========== LOAD ALL PICKLED MODELS ==========
-model_dir = "pickled_models"
-models = {}
+# =====================================================
+#                LOAD PICKLED MODELS
+# =====================================================
 
-if not os.path.exists(model_dir):
-    raise Exception(f"Folder '{model_dir}' not found. Please create it and add .pkl models.")
+models = {}  
+model_dir = "."   # Load .pkl from root directory of repo
 
 for file in os.listdir(model_dir):
     if file.endswith(".pkl"):
@@ -30,15 +36,16 @@ for file in os.listdir(model_dir):
             models[city_name] = pickle.load(f)
 
 if not models:
-    raise Exception("No models found in pickled_models folder!")
+    raise Exception("❌ No .pkl models found in repo root!")
 
 print(f"✅ Loaded models: {list(models.keys())}")
 
-# ========== ROUTES ==========
+# =====================================================
+#                        ROUTES
+# =====================================================
 
 @app.get("/")
 def home():
-    """Root endpoint"""
     return {
         "message": "Welcome to Smart Poultry Prediction API!",
         "available_models": list(models.keys())
@@ -54,21 +61,31 @@ def predict(
     api_key: str = Depends(check_key)
 ):
     """
-    Example:
-    http://127.0.0.1:8000/predict?city=Faisalabad_close_mlp&temp=30&humidity=60&feed=2.5&weight=1.2
-    Header: X-API-Key = mysecretkey123
+    Example URL:
+    /predict?city=lahore_rawalpindi_models&temp=30&humidity=60&feed=2.5&weight=1.2
+
+    Header:
+        X-API-Key: your_api_key_here
     """
 
-    # Check if city exists
     if city not in models:
-        raise HTTPException(status_code=404, detail=f"Model for '{city}' not found.")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{city}' not found. Available: {list(models.keys())}"
+        )
 
     model = models[city]
     X = np.array([[temp, humidity, feed, weight]])
-    prediction = model.predict(X)
     
+    prediction = model.predict(X)
+
     return {
         "city": city,
-        "inputs": {"temp": temp, "humidity": humidity, "feed": feed, "weight": weight},
+        "inputs": {
+            "temp": temp,
+            "humidity": humidity,
+            "feed": feed,
+            "weight": weight
+        },
         "prediction": prediction.tolist()
     }
