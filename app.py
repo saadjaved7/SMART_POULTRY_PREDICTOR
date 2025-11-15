@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
-import joblib  # Changed from pickle to joblib
+import joblib
 import numpy as np
-import pandas as pd  # ADDED - Critical for feature names
+import pandas as pd
 from datetime import datetime
 import os
 
@@ -10,81 +10,48 @@ app = FastAPI(title="Smart Poultry Prediction API")
 API_KEY = "mysecretkey123"
 
 # =====================================================
-# COMPLETE LATEST PRICES WITH ALL REQUIRED DATA
+# LOAD CSV DATA - EXACTLY LIKE predict.py
 # =====================================================
-LATEST_PRICES = {
-    'Rawalpindi': {
-        'date': '2025-11-15',
-        'open': 370.00,
-        'close': 362.50,
-        'high': 372.00,
-        'low': 360.00,
-        # Lags (1-7)
-        'lag_1': 370.00,
-        'lag_2': 368.00,
-        'lag_3': 365.00,
-        'lag_4': 363.00,
-        'lag_5': 362.00,
-        'lag_6': 361.00,
-        'lag_7': 360.00,
-        # Moving averages
-        'ma_3': 367.67,
-        'ma_7': 365.5,
-        'ma_14': 363.2,
-        'ma_30': 361.5,
-        # Standard deviations
-        'std_3': 2.5,
-        'std_7': 3.2,
-        'std_14': 4.1,
-        'std_30': 5.0,
-        # EMAs
-        'ema_7': 366.2,
-        'ema_14': 364.0,
-    },
-    'Lahore': {
-        'date': '2025-11-15',
-        'open': 350.00,
-        'close': 360.00,
-        'high': 362.00,
-        'low': 348.00,
-        # Lags (1-7)
-        'lag_1': 350.00,
-        'lag_2': 348.00,
-        'lag_3': 347.00,
-        'lag_4': 346.00,
-        'lag_5': 345.50,
-        'lag_6': 345.00,
-        'lag_7': 345.00,
-        # Moving averages
-        'ma_3': 348.33,
-        'ma_7': 347.5,
-        'ma_14': 345.8,
-        'ma_30': 344.2,
-        # Standard deviations
-        'std_3': 1.5,
-        'std_7': 2.1,
-        'std_14': 3.2,
-        'std_30': 4.5,
-        # EMAs
-        'ema_7': 348.2,
-        'ema_14': 346.5,
-    }
-}
+CSV_FILE = "agbro_combined_cleaned.csv"  # Put this in your repo root
+# Alternative paths to try
+CSV_PATHS = [
+    "agbro_combined_cleaned.csv",
+    "data/agbro_combined_cleaned.csv",
+    "./agbro_combined_cleaned.csv",
+    "./data/agbro_combined_cleaned.csv"
+]
+
+# Try to find CSV file
+for path in CSV_PATHS:
+    if os.path.exists(path):
+        CSV_FILE = path
+        break
+
+if not os.path.exists(CSV_FILE):
+    raise Exception(f"❌ CSV file not found: {CSV_FILE}")
+
+# Load data exactly like predict.py
+df = pd.read_csv(CSV_FILE, parse_dates=["Date"], dayfirst=True)
+df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
+df = df.sort_values('Date').reset_index(drop=True)
+df.ffill(inplace=True)
+
+print(f"✅ Loaded CSV with {len(df)} rows. Latest date: {df['Date'].max()}")
 
 # =====================================================
-# LOAD MODELS (USING JOBLIB)
+# LOAD MODELS
 # =====================================================
+cities = ['Rawalpindi', 'Lahore']
 models = {}
-model_file = "lahore_rawalpindi_models.joblib"  # Changed to .joblib
+model_file = "lahore_rawalpindi_models.joblib"
 
 if not os.path.exists(model_file):
     raise Exception(f"❌ Model file not found: {model_file}")
 
 try:
-    models = joblib.load(model_file)  # Using joblib.load
+    models = joblib.load(model_file)
     print(f"✅ Loaded models: {list(models.keys())}")
     
-    # Print model details for debugging
     for city in models:
         print(f"\n📍 {city}")
         for target in ['Open', 'Close']:
@@ -94,117 +61,75 @@ except Exception as e:
     raise Exception(f"❌ Failed to load models: {str(e)}")
 
 # =====================================================
-# CREATE ALL 30 FEATURES IN CORRECT ORDER
+# FEATURE CREATOR - EXACT COPY FROM predict.py
 # =====================================================
-def create_features(date_str: str, city: str, feature_names: list):
+def create_advanced_features(df, city, price_type):
     """
-    Creates exactly the 30 features needed in the EXACT order expected by the model
+    EXACT copy of the function from predict.py
     """
-    target_date = datetime.strptime(date_str, "%Y-%m-%d")
-    city_prices = LATEST_PRICES[city]
+    data = df[['Date', f'{city}_Open', f'{city}_Close']].copy()
+    price_col = f'{city}_{price_type}'
     
-    # Get cross-city data based on what the model expects
-    # Lahore models expect Rawalpindi_lag1
-    # Rawalpindi models expect Lahore_lag1
-    if city == 'Lahore':
-        cross_city_data = LATEST_PRICES['Rawalpindi']
-        cross_city_name = 'Rawalpindi'
-    else:
-        cross_city_data = LATEST_PRICES['Lahore']
-        cross_city_name = 'Lahore'
+    for lag in range(1, 8):
+        data[f'lag_{lag}'] = data[price_col].shift(lag)
+    for window in [3, 7, 14, 30]:
+        data[f'ma_{window}'] = data[price_col].rolling(window).mean()
+        data[f'std_{window}'] = data[price_col].rolling(window).std()
+    data['ema_7'] = data[price_col].ewm(span=7).mean()
+    data['ema_14'] = data[price_col].ewm(span=14).mean()
+    data['pct_change_1'] = data[price_col].pct_change(1)
+    data['pct_change_7'] = data[price_col].pct_change(7)
+    data['momentum_3'] = data[price_col] - data[price_col].shift(3)
+    data['momentum_7'] = data[price_col] - data[price_col].shift(7)
+    data['high_low_diff'] = data[f'{city}_Close'] - data[f'{city}_Open']
+    data['volatility_7'] = data['high_low_diff'].rolling(7).std()
+    data['day_of_week'] = data['Date'].dt.dayofweek
+    data['day_of_month'] = data['Date'].dt.day
+    data['month'] = data['Date'].dt.month
+    data['quarter'] = data['Date'].dt.quarter
+    data['trend_7'] = data[price_col].rolling(7).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) == 7 else np.nan)
+    data['trend_14'] = data[price_col].rolling(14).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) == 14 else np.nan)
     
-    # Calculate all features - match EXACTLY what predict.py does
-    features_dict = {
-        # Lags
-        'lag_1': city_prices['lag_1'],
-        'lag_2': city_prices['lag_2'],
-        'lag_3': city_prices['lag_3'],
-        'lag_4': city_prices['lag_4'],
-        'lag_5': city_prices['lag_5'],
-        'lag_6': city_prices['lag_6'],
-        'lag_7': city_prices['lag_7'],
-        
-        # Moving averages
-        'ma_3': city_prices['ma_3'],
-        'ma_7': city_prices['ma_7'],
-        'ma_14': city_prices['ma_14'],
-        'ma_30': city_prices['ma_30'],
-        
-        # Standard deviations
-        'std_3': city_prices['std_3'],
-        'std_7': city_prices['std_7'],
-        'std_14': city_prices['std_14'],
-        'std_30': city_prices['std_30'],
-        
-        # EMAs
-        'ema_7': city_prices['ema_7'],
-        'ema_14': city_prices['ema_14'],
-        
-        # Percentage changes - using CLOSE price
-        'pct_change_1': ((city_prices['close'] - city_prices['lag_1']) / city_prices['lag_1']) * 100 if city_prices['lag_1'] != 0 else 0.0,
-        'pct_change_7': ((city_prices['close'] - city_prices['lag_7']) / city_prices['lag_7']) * 100 if city_prices['lag_7'] != 0 else 0.0,
-        
-        # Momentum - using CLOSE price
-        'momentum_3': ((city_prices['close'] - city_prices['lag_3']) / city_prices['lag_3']) * 100 if city_prices['lag_3'] != 0 else 0.0,
-        'momentum_7': ((city_prices['close'] - city_prices['lag_7']) / city_prices['lag_7']) * 100 if city_prices['lag_7'] != 0 else 0.0,
-        
-        # High-low difference
-        'high_low_diff': city_prices['high'] - city_prices['low'],
-        
-        # Volatility
-        'volatility_7': (city_prices['std_7'] / city_prices['ma_7'] * 100) if city_prices['ma_7'] != 0 else 0.0,
-        
-        # Time features
-        'day_of_week': target_date.weekday(),
-        'day_of_month': target_date.day,
-        'month': target_date.month,
-        'quarter': (target_date.month - 1) // 3 + 1,
-        
-        # Trends
-        'trend_7': 1.0 if city_prices['close'] > city_prices['lag_7'] else 0.0,
-        'trend_14': 1.0 if city_prices['ma_7'] > city_prices['ma_14'] else 0.0,
-        
-        # Cross-city lag - THE CRITICAL PART
-        f'{cross_city_name}_lag1': cross_city_data['lag_1'],
+    for other_city in [c for c in cities if c != city]:
+        col = f'{other_city}_{price_type}'
+        if col in df.columns:
+            data[f'{other_city}_lag1'] = df[col].shift(1)
+    
+    data = data.iloc[30:].reset_index(drop=True)
+    return data
+
+# =====================================================
+# PRE-GENERATE FEATURE DATA FOR EACH CITY
+# =====================================================
+feature_data = {}
+for city in cities:
+    feature_data[city] = {
+        'Open': create_advanced_features(df, city, 'Open'),
+        'Close': create_advanced_features(df, city, 'Close')
     }
-    
-    # Build feature array in EXACT order from feature_names
-    feature_array = []
-    for fname in feature_names:
-        if fname in features_dict:
-            feature_array.append(features_dict[fname])
-        else:
-            print(f"⚠️ CRITICAL: Missing feature '{fname}' for {city}, using 0.0")
-            feature_array.append(0.0)
-    
-    return np.array([feature_array])
+    print(f"✅ Generated features for {city}")
 
 # =====================================================
 # ROUTES
 # =====================================================
 @app.get("/")
 def home():
+    latest_data = {}
+    for city in cities:
+        latest_row = df.iloc[-1]
+        latest_data[city] = {
+            "date": latest_row['Date'].strftime('%Y-%m-%d'),
+            "open": float(latest_row[f'{city}_Open']),
+            "close": float(latest_row[f'{city}_Close'])
+        }
+    
     return {
-        "message": "🐔 Smart Poultry Prediction API",
+        "message": "🐔 Smart Poultry Prediction API (CSV-Powered)",
         "available_cities": list(models.keys()),
-        "latest_prices": {
-            "Rawalpindi": {
-                "date": LATEST_PRICES['Rawalpindi']['date'],
-                "open": LATEST_PRICES['Rawalpindi']['open'],
-                "close": LATEST_PRICES['Rawalpindi']['close']
-            },
-            "Lahore": {
-                "date": LATEST_PRICES['Lahore']['date'],
-                "open": LATEST_PRICES['Lahore']['open'],
-                "close": LATEST_PRICES['Lahore']['close']
-            }
-        },
-        "model_info": {
-            city: {
-                "Open": models[city]['Open']['type'],
-                "Close": models[city]['Close']['type']
-            } for city in models.keys()
-        },
+        "latest_prices": latest_data,
+        "csv_loaded": True,
+        "csv_rows": len(df),
+        "csv_latest_date": df['Date'].max().strftime('%Y-%m-%d'),
         "example": "https://smart-poultry-predictor-6gca.onrender.com/predict_date?city=Lahore&date=2025-11-18&api_key=mysecretkey123"
     }
 
@@ -221,34 +146,74 @@ def predict_date(city: str, date: str, api_key: str):
             break
     
     if not city_key:
-        raise HTTPException(status_code=404, detail=f"City '{city}' not found. Available: {list(models.keys())}")
+        raise HTTPException(status_code=404, detail=f"City not found. Available: {list(models.keys())}")
     
     try:
-        datetime.strptime(date, "%Y-%m-%d")
+        target_date = datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     
     try:
+        # Check if historical data exists
+        historical = df[df['Date'] == target_date]
+        if not historical.empty and pd.notna(historical.iloc[0][f'{city_key}_Open']):
+            row = historical.iloc[0]
+            return {
+                "city": city_key,
+                "date": date,
+                "type": "historical",
+                "predictions": {
+                    "open": round(float(row[f'{city_key}_Open']), 2),
+                    "close": round(float(row[f'{city_key}_Close']), 2),
+                    "expected_change": round(float(row[f'{city_key}_Close'] - row[f'{city_key}_Open']), 2)
+                },
+                "currency": "PKR"
+            }
+        
+        # Future prediction
         open_data = models[city_key]['Open']
         close_data = models[city_key]['Close']
         
-        # Create features
-        X_open = create_features(date, city_key, open_data['features'])
-        X_close = create_features(date, city_key, close_data['features'])
+        # Get latest features from pre-generated data
+        open_features_df = feature_data[city_key]['Open']
+        close_features_df = feature_data[city_key]['Close']
+        
+        # Get the last row (most recent data)
+        open_row = open_features_df.iloc[-1]
+        close_row = close_features_df.iloc[-1]
+        
+        # Extract features in correct order
+        X_open = open_row[open_data['features']].values.reshape(1, -1)
+        X_close = close_row[close_data['features']].values.reshape(1, -1)
+        
+        # Convert to DataFrame with column names for scaler
+        X_open_df = pd.DataFrame(X_open, columns=open_data['features'])
+        X_close_df = pd.DataFrame(X_close, columns=close_data['features'])
         
         # Apply scaling
         if open_data['scaler']:
-            X_open = open_data['scaler'].transform(X_open)
+            X_open_scaled = open_data['scaler'].transform(X_open_df)
+        else:
+            X_open_scaled = X_open_df
+            
         if close_data['scaler']:
-            X_close = close_data['scaler'].transform(X_close)
+            X_close_scaled = close_data['scaler'].transform(X_close_df)
+        else:
+            X_close_scaled = X_close_df
         
         # Predict
-        predicted_open = float(open_data['model'].predict(X_open)[0])
-        predicted_close = float(close_data['model'].predict(X_close)[0])
+        predicted_open = float(open_data['model'].predict(X_open_scaled)[0])
+        predicted_close = float(close_data['model'].predict(X_close_scaled)[0])
+        
+        # Get latest actual data
+        latest_date = open_features_df.iloc[-1]['Date']
+        latest_open = df[df['Date'] == latest_date].iloc[0][f'{city_key}_Open']
+        latest_close = df[df['Date'] == latest_date].iloc[0][f'{city_key}_Close']
         
         return {
             "city": city_key,
             "date": date,
+            "type": "future",
             "predictions": {
                 "open": round(predicted_open, 2),
                 "close": round(predicted_close, 2),
@@ -256,9 +221,9 @@ def predict_date(city: str, date: str, api_key: str):
             },
             "currency": "PKR",
             "latest_data": {
-                "date": LATEST_PRICES[city_key]['date'],
-                "open": LATEST_PRICES[city_key]['open'],
-                "close": LATEST_PRICES[city_key]['close']
+                "date": latest_date.strftime('%Y-%m-%d'),
+                "open": round(float(latest_open), 2),
+                "close": round(float(latest_close), 2)
             },
             "model_info": {
                 "open": {
@@ -275,7 +240,8 @@ def predict_date(city: str, date: str, api_key: str):
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+        import traceback
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}\n{traceback.format_exc()}")
 
 
 @app.get("/debug")
@@ -298,8 +264,11 @@ def debug_features(city: str, date: str, api_key: str):
         open_data = models[city_key]['Open']
         close_data = models[city_key]['Close']
         
-        X_open = create_features(date, city_key, open_data['features'])
-        X_close = create_features(date, city_key, close_data['features'])
+        open_features_df = feature_data[city_key]['Open']
+        close_features_df = feature_data[city_key]['Close']
+        
+        open_row = open_features_df.iloc[-1]
+        close_row = close_features_df.iloc[-1]
         
         return {
             "city": city_key,
@@ -307,16 +276,21 @@ def debug_features(city: str, date: str, api_key: str):
             "open_features": {
                 "expected": open_data['features'],
                 "count": len(open_data['features']),
-                "values": X_open[0].tolist(),
-                "first_5": dict(zip(open_data['features'][:5], X_open[0][:5].tolist()))
+                "values": open_row[open_data['features']].tolist(),
+                "first_5": dict(zip(open_data['features'][:5], open_row[open_data['features'][:5]].tolist()))
             },
             "close_features": {
                 "expected": close_data['features'],
                 "count": len(close_data['features']),
-                "values": X_close[0].tolist(),
-                "first_5": dict(zip(close_data['features'][:5], X_close[0][:5].tolist()))
+                "values": close_row[close_data['features']].tolist(),
+                "first_5": dict(zip(close_data['features'][:5], close_row[close_data['features'][:5]].tolist()))
             },
-            "latest_prices": LATEST_PRICES[city_key]
+            "latest_date": open_row['Date'].strftime('%Y-%m-%d'),
+            "csv_info": {
+                "total_rows": len(df),
+                "latest_date": df['Date'].max().strftime('%Y-%m-%d')
+            }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Debug error: {str(e)}")
+        import traceback
+        raise HTTPException(status_code=500, detail=f"Debug error: {str(e)}\n{traceback.format_exc()}")
