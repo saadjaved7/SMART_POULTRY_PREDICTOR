@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+numpy
+pickle-mixin
+joblib
