@@ -134,9 +134,7 @@ def predict_date(city: str, date: str, api_key: str):
             status_code=500,
             detail=f"Prediction error: {str(e)}"
         )
-```
 
----
 
 ## 🌐 **Now Use These URLs Directly in Browser:**
 
@@ -148,3 +146,4 @@ def predict_date(city: str, date: str, api_key: str):
 # ### **Test Rawalpindi:**
 # ```
 # https://smart-poultry-predictor-6gca.onrender.com/predict_date?city=Rawalpindi&date=2025-11-20&api_key=mysecretkey123
+
