@@ -4,3 +4,4 @@ numpy
 pickle-mixin
 joblib
 scikit-learn
+pandas
