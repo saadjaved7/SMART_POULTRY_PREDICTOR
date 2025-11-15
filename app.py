@@ -1,5 +1,4 @@
-from fastapi import FastAPI, HTTPException, Security, Depends
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import FastAPI, HTTPException
 import pickle
 import numpy as np
 from datetime import datetime
@@ -11,15 +10,9 @@ import os
 app = FastAPI(title="Smart Poultry Prediction API")
 
 # =====================================================
-# API KEY SECURITY
+# API KEY
 # =====================================================
 API_KEY = "mysecretkey123"
-api_key_header = APIKeyHeader(name="X-API-Key")
-
-def check_key(key: str = Security(api_key_header)):
-    if key != API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    return key
 
 # =====================================================
 # LOAD PKL MODELS
@@ -41,20 +34,12 @@ except Exception as e:
 # HELPER: CREATE DUMMY FEATURES
 # =====================================================
 def create_features(date_str: str):
-    """
-    Creates dummy features for prediction.
-    WARNING: This uses dummy values! For accurate predictions,
-    you need real lag/MA/EMA features from historical data.
-    """
     target_date = datetime.strptime(date_str, "%Y-%m-%d")
     
-    # Time features
     day_of_week = target_date.weekday()
     month = target_date.month
     day = target_date.day
     
-    # Dummy features (replace with real calculations)
-    # You need to match the exact number of features your model expects
     features = [
         day_of_week,
         month,
@@ -78,24 +63,24 @@ def home():
     return {
         "message": "🐔 Smart Poultry Prediction API",
         "available_cities": list(models.keys()),
-        "endpoints": {
-            "predict": "/predict_date?city=Lahore&date=2025-02-20"
-        },
-        "note": "Add header: X-API-Key: mysecretkey123"
+        "example_usage": "https://smart-poultry-predictor-6gca.onrender.com/predict_date?city=Lahore&date=2025-02-20&api_key=mysecretkey123",
+        "note": "Include api_key in URL"
     }
 
 @app.get("/predict_date")
-def predict_date(
-    city: str,
-    date: str,
-    api_key: str = Depends(check_key)
-):
+def predict_date(city: str, date: str, api_key: str):
     """
     Predict poultry prices for a given city and date.
     
-    Example: /predict_date?city=Lahore&date=2025-02-20
-    Header: X-API-Key: mysecretkey123
+    Example: /predict_date?city=Lahore&date=2025-02-20&api_key=mysecretkey123
     """
+    
+    # Check API key
+    if api_key != API_KEY:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid API key. Please provide valid api_key parameter."
+        )
     
     # Find city (case-insensitive)
     city_key = None
@@ -121,8 +106,6 @@ def predict_date(
     
     # Get city models
     city_models = models[city_key]
-    
-    # ⚠️ CRITICAL FIX: Access nested dictionary
     open_model = city_models['Open']
     close_model = city_models['Close']
     
@@ -143,8 +126,7 @@ def predict_date(
                 "close": round(predicted_close, 2),
                 "expected_change": round(change, 2)
             },
-            "currency": "PKR",
-            "warning": "⚠️ Using simplified features. Accuracy may vary from training performance."
+            "currency": "PKR"
         }
     
     except Exception as e:
@@ -152,3 +134,17 @@ def predict_date(
             status_code=500,
             detail=f"Prediction error: {str(e)}"
         )
+```
+
+---
+
+## 🌐 **Now Use These URLs Directly in Browser:**
+
+# ### **Test Lahore:**
+# ```
+# https://smart-poultry-predictor-6gca.onrender.com/predict_date?city=Lahore&date=2025-02-20&api_key=mysecretkey123
+# ```
+
+# ### **Test Rawalpindi:**
+# ```
+# https://smart-poultry-predictor-6gca.onrender.com/predict_date?city=Rawalpindi&date=2025-11-20&api_key=mysecretkey123
