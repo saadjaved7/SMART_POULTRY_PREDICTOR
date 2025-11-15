@@ -1,8 +1,10 @@
-from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi import FastAPI, HTTPException, Security, Depends, Query
 from fastapi.security.api_key import APIKeyHeader
+import os
 import pickle
 import numpy as np
-import os
+import pandas as pd
+from datetime import datetime
 
 # =====================================================
 #                 FASTAPI APP SETUP
@@ -12,12 +14,10 @@ app = FastAPI(title="Smart Poultry Prediction API")
 # =====================================================
 #                 API KEY SECURITY
 # =====================================================
-API_KEY = ("mysecretkey123")  # Set this in Render Environment
+API_KEY = os.getenv("API_KEY", "mysecretkey123")  # default if not set in Render
 api_key_header = APIKeyHeader(name="X-API-Key")
 
 def check_key(key: str = Security(api_key_header)):
-    if API_KEY is None:
-        raise HTTPException(status_code=500, detail="API_KEY not set in environment!")
     if key != API_KEY:
         raise HTTPException(status_code=403, detail="Unauthorized")
     return key
@@ -25,20 +25,24 @@ def check_key(key: str = Security(api_key_header)):
 # =====================================================
 #                LOAD PICKLED MODELS
 # =====================================================
+models = {}
+model_file = "lahore_rawalpindi_models.pkl"  # or joblib
+if not os.path.exists(model_file):
+    raise Exception(f"❌ Model file '{model_file}' not found in repo!")
 
-models = {}  
-model_dir = "."   # Load .pkl from root directory of repo
-
-for file in os.listdir(model_dir):
-    if file.endswith(".pkl"):
-        city_name = file.replace(".pkl", "")
-        with open(os.path.join(model_dir, file), "rb") as f:
-            models[city_name] = pickle.load(f)
-
-if not models:
-    raise Exception("❌ No .pkl models found in repo root!")
+with open(model_file, "rb") as f:
+    models = pickle.load(f)
 
 print(f"✅ Loaded models: {list(models.keys())}")
+
+# =====================================================
+#                MOCK LATEST HISTORICAL DATA
+# =====================================================
+# Replace this with real historical data if you have a CSV/DB
+latest_data = {
+    "Rawalpindi": {"Open": 350.00, "Close": 350.00, "Date": "2025-11-11"},
+    "Lahore": {"Open": 355.00, "Close": 357.00, "Date": "2025-11-11"},
+}
 
 # =====================================================
 #                        ROUTES
@@ -48,45 +52,60 @@ print(f"✅ Loaded models: {list(models.keys())}")
 def home():
     return {
         "message": "Welcome to Smart Poultry Prediction API!",
-        "available_models": list(models.keys())
+        "available_cities": list(models.keys())
     }
 
-@app.get("/predict")
-def predict(
-    city: str,
-    temp: float,
-    humidity: float,
-    feed: float,
-    weight: float,
+@app.get("/predict_date")
+def predict_date(
+    city: str = Query(..., description="City name, e.g., Lahore or Rawalpindi"),
+    date: str = Query(..., description="Date in YYYY-MM-DD format"),
     api_key: str = Depends(check_key)
 ):
     """
-    Example URL:
-    /predict?city=lahore_rawalpindi_models&temp=30&humidity=60&feed=2.5&weight=1.2
+    Predict Open and Close prices for a city on a given date.
 
-    Header:
-        X-API-Key: your_api_key_here
+    Example:
+    GET /predict_date?city=Lahore&date=2025-02-20
+    Header: X-API-Key: your_api_key_here
     """
-
+    city = city.title()  # normalize input
     if city not in models:
         raise HTTPException(
             status_code=404,
-            detail=f"Model '{city}' not found. Available: {list(models.keys())}"
+            detail=f"City '{city}' not found. Available: {list(models.keys())}"
         )
 
-    model = models[city]
-    X = np.array([[temp, humidity, feed, weight]])
-    
-    prediction = model.predict(X)
+    try:
+        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format! Use YYYY-MM-DD.")
+
+    city_models = models[city]  # expects dict: {"Open": model, "Close": model, "metrics": {...}}
+
+    # Here we mock features for the date (replace with your real feature engineering)
+    X = np.array([[0, 0, 0, 0]])  # dummy features, replace with your actual feature vector
+    open_model = city_models.get("Open")
+    close_model = city_models.get("Close")
+    metrics = city_models.get("metrics", {})
+
+    if open_model is None or close_model is None:
+        raise HTTPException(status_code=500, detail="City models incomplete (Open/Close missing).")
+
+    # Predictions
+    predicted_open = float(open_model.predict(X)[0])
+    predicted_close = float(close_model.predict(X)[0])
+    expected_change = predicted_close - predicted_open
+
+    latest = latest_data.get(city, {"Open": None, "Close": None, "Date": None})
 
     return {
         "city": city,
-        "inputs": {
-            "temp": temp,
-            "humidity": humidity,
-            "feed": feed,
-            "weight": weight
+        "date": str(target_date),
+        "prediction": {
+            "Open": round(predicted_open, 2),
+            "Close": round(predicted_close, 2),
+            "Expected_Change": round(expected_change, 2)
         },
-        "prediction": prediction.tolist()
+        "latest_data": latest,
+        "metrics": metrics
     }
-
