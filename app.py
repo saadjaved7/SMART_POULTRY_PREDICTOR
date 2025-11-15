@@ -97,21 +97,20 @@ except Exception as e:
 # =====================================================
 def create_features(date_str: str, city: str, feature_names: list):
     """
-    Creates exactly the 30 features needed:
-    ['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5', 'lag_6', 'lag_7', 
-     'ma_3', 'std_3', 'ma_7', 'std_7', 'ma_14', 'std_14', 'ma_30', 'std_30',
-     'ema_7', 'ema_14', 'pct_change_1', 'pct_change_7', 'momentum_3', 
-     'momentum_7', 'high_low_diff', 'volatility_7', 'day_of_week', 
-     'day_of_month', 'month', 'quarter', 'trend_7', 'trend_14', 'Rawalpindi_lag1']
+    Creates exactly the 30 features needed in the EXACT order expected by the model
     """
     target_date = datetime.strptime(date_str, "%Y-%m-%d")
     city_prices = LATEST_PRICES[city]
     
-    # Get cross-city data
+    # Get cross-city data based on what the model expects
+    # Lahore models expect Rawalpindi_lag1
+    # Rawalpindi models expect Lahore_lag1
     if city == 'Lahore':
         cross_city_data = LATEST_PRICES['Rawalpindi']
+        cross_city_name = 'Rawalpindi'
     else:
         cross_city_data = LATEST_PRICES['Lahore']
+        cross_city_name = 'Lahore'
     
     # Calculate all features
     features_dict = {
