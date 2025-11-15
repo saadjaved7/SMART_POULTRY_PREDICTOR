@@ -12,7 +12,7 @@ app = FastAPI(title="Smart Poultry Prediction API")
 # =====================================================
 #                 API KEY SECURITY
 # =====================================================
-API_KEY = os.getenv("API_KEY")  # Set this in Render Environment
+API_KEY = ("mysecretkey123")  # Set this in Render Environment
 api_key_header = APIKeyHeader(name="X-API-Key")
 
 def check_key(key: str = Security(api_key_header)):
@@ -89,3 +89,4 @@ def predict(
         },
         "prediction": prediction.tolist()
     }
+
