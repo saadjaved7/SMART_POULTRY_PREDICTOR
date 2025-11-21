@@ -1,33 +1,72 @@
-import os
+from fastapi import FastAPI, HTTPException
 import joblib
-import pandas as pd
 import numpy as np
-from xgboost import XGBRegressor
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, r2_score, mean_absolute_percentage_error
-import warnings
-warnings.filterwarnings('ignore')
+import pandas as pd
+from datetime import datetime
+import os
 
-# ---------------- Load data ----------------
-df = pd.read_csv("data/agbro_combined_cleaned.csv", parse_dates=["Date"], dayfirst=True)
+app = FastAPI(title="Smart Poultry Prediction API")
+
+API_KEY = "mysecretkey123"
+
+# =====================================================
+# LOAD CSV DATA - EXACTLY LIKE predict.py
+# =====================================================
+CSV_FILE = "agbro_combined_cleaned.csv"  # Put this in your repo root
+# Alternative paths to try
+CSV_PATHS = [
+    "agbro_combined_cleaned.csv",
+    "data/agbro_combined_cleaned.csv",
+    "./agbro_combined_cleaned.csv",
+    "./data/agbro_combined_cleaned.csv"
+]
+
+# Try to find CSV file
+for path in CSV_PATHS:
+    if os.path.exists(path):
+        CSV_FILE = path
+        break
+
+if not os.path.exists(CSV_FILE):
+    raise Exception(f"❌ CSV file not found: {CSV_FILE}")
+
+# Load data exactly like predict.py
+df = pd.read_csv(CSV_FILE, parse_dates=["Date"], dayfirst=True)
 df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
 df = df.sort_values('Date').reset_index(drop=True)
 df.ffill(inplace=True)
 
-# cities = ['Rawalpindi', 'Lahore', 'Faisalabad', 'Multan']
-cities = ['Rawalpindi', 'Lahore']   # Faisalabad, Multan commented as requested
+print(f"✅ Loaded CSV with {len(df)} rows. Latest date: {df['Date'].max()}")
 
-print("="*70)
-print("🐔 HYBRID CITY-WISE PREDICTOR (XGB / RF / MLP)")
-print("="*70)
-print("\n🎯 Features: Lag, MA, EMA, Momentum, Volatility, Trend, Cross-city lags, Time")
-print("="*70)
+# =====================================================
+# LOAD MODELS
+# =====================================================
+cities = ['Rawalpindi', 'Lahore']
+models = {}
+model_file = "lahore_rawalpindi_models.joblib"
 
-# ---------------- Feature creator ----------------
+if not os.path.exists(model_file):
+    raise Exception(f"❌ Model file not found: {model_file}")
+
+try:
+    models = joblib.load(model_file)
+    print(f"✅ Loaded models: {list(models.keys())}")
+    
+    for city in models:
+        print(f"\n📍 {city}")
+        for target in ['Open', 'Close']:
+            if target in models[city]:
+                print(f"  {target}: {models[city][target]['type']} | R2: {models[city][target]['r2']:.4f}")
+except Exception as e:
+    raise Exception(f"❌ Failed to load models: {str(e)}")
+
+# =====================================================
+# FEATURE CREATOR - EXACT COPY FROM predict.py
+# =====================================================
 def create_advanced_features(df, city, price_type):
+    """
+    EXACT copy of the function from predict.py
+    """
     data = df[['Date', f'{city}_Open', f'{city}_Close']].copy()
     price_col = f'{city}_{price_type}'
     
@@ -59,195 +98,199 @@ def create_advanced_features(df, city, price_type):
     data = data.iloc[30:].reset_index(drop=True)
     return data
 
-# ---------------- Model params ----------------
-xgb_params = {'n_estimators':600, 'learning_rate':0.01, 'max_depth':7, 'min_child_weight':1,
-              'subsample':0.9,'colsample_bytree':0.9,'gamma':0,'reg_alpha':0.05,'reg_lambda':1,
-              'random_state':42,'tree_method':'hist','verbosity':0}
-
-rf_params = {'n_estimators':200,'max_depth':12,'min_samples_split':6,'min_samples_leaf':3,'random_state':42,'n_jobs':-1}
-
-mlp_params = {'hidden_layer_sizes':(128,64),'activation':'relu','solver':'adam','max_iter':500,'random_state':42}
-
-MODEL_DIR = "models_selected"
-os.makedirs(MODEL_DIR, exist_ok=True)
-
-# Master single-file (joblib) for Lahore + Rawalpindi
-MASTER_MODEL_FILE = os.path.join(MODEL_DIR, "lahore_rawalpindi_models.joblib")
-master_models = {}
-if os.path.exists(MASTER_MODEL_FILE):
-    print("🔄 Master joblib found! Loading Lahore + Rawalpindi models...")
-    master_models = joblib.load(MASTER_MODEL_FILE)
-
-# ---------------- Training functions ----------------
-def train_xgb(X, y): return XGBRegressor(**xgb_params).fit(X, y)
-def train_rf(X, y): return RandomForestRegressor(**rf_params).fit(X, y)
-def train_mlp(X, y):
-    scaler = StandardScaler()
-    Xs = scaler.fit_transform(X)
-    model = MLPRegressor(**mlp_params).fit(Xs, y)
-    return model, scaler
-
-def evaluate_model(model, X_test, y_test, model_type='xgb', scaler=None):
-    if model_type=='mlp' and scaler is not None: X_test = scaler.transform(X_test)
-    preds = model.predict(X_test)
-    return {'r2': r2_score(y_test, preds), 'mae': mean_absolute_error(y_test, preds), 'preds': preds}
-
-# ---------------- Train or Load city-wise models ----------------
-models = {}
-print("\n🎯 LOADING/TRAINING MODELS PER CITY")
-
+# =====================================================
+# PRE-GENERATE FEATURE DATA FOR EACH CITY
+# =====================================================
+feature_data = {}
 for city in cities:
-    print(f"\n📍 {city}")
-    print("-"*60)
-    
-    for price_type in ['Open','Close']:
-        # Check if model is already saved in master joblib
-        if city in master_models and price_type in master_models[city]:
-            print(f"   ✅ Loaded {city} {price_type} from master file")
+    feature_data[city] = {
+        'Open': create_advanced_features(df, city, 'Open'),
+        'Close': create_advanced_features(df, city, 'Close')
+    }
+    print(f"✅ Generated features for {city}")
 
-            entry = master_models[city][price_type]
-            data = create_advanced_features(df, city, price_type)
-
-            # Attach for predictions
-            if price_type == "Open":
-                models.setdefault(city, {})['open'], models[city]['open_data'] = entry, data
-            else:
-                models.setdefault(city, {})['close'], models[city]['close_data'] = entry, data
-
-            print(f"   {price_type}: {entry['type'].upper()} | R2={entry['r2']} | MAE={entry['mae']}")
-            continue
-        
-        # Else train models
-        print(f"   Training models for {price_type}...")
-        data = create_advanced_features(df, city, price_type)
-        features = [c for c in data.columns if c not in ['Date', f'{city}_Open', f'{city}_Close']]
-        X, y = data[features], data[f'{city}_{price_type}']
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False, random_state=42)
-        
-        best_res, best_model, best_scaler, best_type = None, None, None, None
-        for attempt in range(5):
-            xgb_model = train_xgb(X_train, y_train)
-            rf_model = train_rf(X_train, y_train)
-            mlp_model, mlp_scaler = train_mlp(X_train, y_train)
-            
-            candidates = [
-                ('xgb', evaluate_model(xgb_model, X_test, y_test), xgb_model, None),
-                ('rf', evaluate_model(rf_model, X_test, y_test), rf_model, None),
-                ('mlp', evaluate_model(mlp_model, X_test, y_test, 'mlp', mlp_scaler), mlp_model, mlp_scaler)
-            ]
-            candidates_sorted = sorted(candidates, key=lambda x: (x[1]['r2'], -x[1]['mae']), reverse=True)
-            top_type, top_res, top_model, top_scaler = candidates_sorted[0]
-            
-            if top_res['mae'] <= 2:
-                best_res, best_model, best_scaler, best_type = top_res, top_model, top_scaler, top_type
-                break
-            if best_res is None or top_res['mae'] < best_res['mae']:
-                best_res, best_model, best_scaler, best_type = top_res, top_model, top_scaler, top_type
-        
-        # Save into master_models dict (single file later)
-        entry = {
-            'type': best_type,
-            'model': best_model,
-            'scaler': best_scaler,
-            'r2': best_res['r2'],
-            'mae': best_res['mae'],
-            'features': features
+# =====================================================
+# ROUTES
+# =====================================================
+@app.get("/")
+def home():
+    latest_data = {}
+    for city in cities:
+        latest_row = df.iloc[-1]
+        latest_data[city] = {
+            "date": latest_row['Date'].strftime('%Y-%m-%d'),
+            "open": float(latest_row[f'{city}_Open']),
+            "close": float(latest_row[f'{city}_Close'])
         }
+    
+    return {
+        "message": "🐔 Smart Poultry Prediction API (CSV-Powered)",
+        "available_cities": list(models.keys()),
+        "latest_prices": latest_data,
+        "csv_loaded": True,
+        "csv_rows": len(df),
+        "csv_latest_date": df['Date'].max().strftime('%Y-%m-%d'),
+        "example": "https://smart-poultry-predictor-6gca.onrender.com/predict_date?city=Lahore&date=2025-11-18&api_key=mysecretkey123"
+    }
 
-        if city not in master_models:
-            master_models[city] = {}
-
-        master_models[city][price_type] = entry
-
-        # Keep for immediate predictions
-        if price_type == 'Open':
-            models.setdefault(city, {})['open'], models[city]['open_data'] = entry, data
+@app.get("/predict_date")
+def predict_date(city: str, date: str, api_key: str):
+    
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
+    city_key = None
+    for key in models.keys():
+        if key.lower() == city.lower():
+            city_key = key
+            break
+    
+    if not city_key:
+        raise HTTPException(status_code=404, detail=f"City not found. Available: {list(models.keys())}")
+    
+    try:
+        target_date = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    
+    try:
+        # Check if historical data exists
+        historical = df[df['Date'] == target_date]
+        if not historical.empty and pd.notna(historical.iloc[0][f'{city_key}_Open']):
+            row = historical.iloc[0]
+            return {
+                "city": city_key,
+                "date": date,
+                "type": "historical",
+                "predictions": {
+                    "open": round(float(row[f'{city_key}_Open']), 2),
+                    "close": round(float(row[f'{city_key}_Close']), 2),
+                    "expected_change": round(float(row[f'{city_key}_Close'] - row[f'{city_key}_Open']), 2)
+                },
+                "currency": "PKR"
+            }
+        
+        # Future prediction
+        open_data = models[city_key]['Open']
+        close_data = models[city_key]['Close']
+        
+        # Get latest features from pre-generated data
+        open_features_df = feature_data[city_key]['Open']
+        close_features_df = feature_data[city_key]['Close']
+        
+        # Get the last row (most recent data)
+        open_row = open_features_df.iloc[-1]
+        close_row = close_features_df.iloc[-1]
+        
+        # Extract features in correct order
+        X_open = open_row[open_data['features']].values.reshape(1, -1)
+        X_close = close_row[close_data['features']].values.reshape(1, -1)
+        
+        # Convert to DataFrame with column names for scaler
+        X_open_df = pd.DataFrame(X_open, columns=open_data['features'])
+        X_close_df = pd.DataFrame(X_close, columns=close_data['features'])
+        
+        # Apply scaling
+        if open_data['scaler']:
+            X_open_scaled = open_data['scaler'].transform(X_open_df)
         else:
-            models.setdefault(city, {})['close'], models[city]['close_data'] = entry, data
+            X_open_scaled = X_open_df
+            
+        if close_data['scaler']:
+            X_close_scaled = close_data['scaler'].transform(X_close_df)
+        else:
+            X_close_scaled = X_close_df
         
-        print(f"   {price_type}: {best_type.upper()} | R2={best_res['r2']:.4f} | MAE={best_res['mae']:.2f}")
-
-# Save single master joblib for Lahore + Rawalpindi
-print("\n💾 Saving combined Lahore + Rawalpindi model file...")
-joblib.dump(master_models, MASTER_MODEL_FILE)
-print("✅ Saved as:", MASTER_MODEL_FILE)
-
-print("\n✅ Models ready. You can start predictions now.")
-print("="*70)
-
-# ---------------- Prediction functions ----------------
-def load_model_entry(entry):
-    # entry already contains 'model' and possibly 'scaler'
-    model = entry.get('model', None)
-    scaler = entry.get('scaler', None)
-    return model, scaler
-
-def predict_future_prices(city, target_date):
-    if city not in models: return None
-    historical = df[df['Date'] == target_date]
-    if not historical.empty and pd.notna(historical.iloc[0][f'{city}_Open']):
-        row = historical.iloc[0]
-        return {'type': 'historical', 'open': row[f'{city}_Open'], 'close': row[f'{city}_Close']}
-    
-    open_data = models[city]['open_data'].iloc[-1]
-    close_data = models[city]['close_data'].iloc[-1]
-    # Open prediction
-    open_entry = models[city]['open']
-    X_open = open_data[open_entry['features']].values.reshape(1, -1)
-    open_model, open_scaler = load_model_entry(open_entry)
-    pred_open = open_model.predict(open_scaler.transform(X_open) if open_entry['type'] == 'mlp' and open_scaler is not None else X_open)[0]
-    # Close prediction
-    close_entry = models[city]['close']
-    X_close = close_data[close_entry['features']].values.reshape(1, -1)
-    close_model, close_scaler = load_model_entry(close_entry)
-    pred_close = close_model.predict(close_scaler.transform(X_close) if close_entry['type'] == 'mlp' and close_scaler is not None else X_close)[0]
-    
-    return {'type': 'future', 'open': pred_open, 'close': pred_close,
-            'latest_open': open_data[f'{city}_Open'], 'latest_close': close_data[f'{city}_Close'],
-            'latest_date': open_data['Date'],
-            'open_model_type': open_entry['type'], 'open_model_r2': open_entry['r2'], 'open_model_mae': open_entry['mae'],
-            'close_model_type': close_entry['type'], 'close_model_r2': close_entry['r2'], 'close_model_mae': close_entry['mae']}
-
-# ---------------- Interactive prompt ----------------
-print("\n💡 READY FOR PREDICTIONS")
-
-while True:
-    print(f"\nAvailable cities: {', '.join(cities)}")
-    city = input("Enter city: ").strip()
-    if city not in cities: print("❌ Invalid city"); continue
-    date_str = input("Enter date (YYYY-MM-DD): ").strip()
-    try: target_date = pd.to_datetime(date_str)
-    except: print("❌ Invalid date"); continue
-    res = predict_future_prices(city, target_date)
-    if res is None: print("❌ Prediction error"); continue
-    
-    print("\n" + "="*50)
-    if res['type'] == 'historical':
-        print(f"📅 HISTORICAL DATA - {city} ({target_date.strftime('%Y-%m-%d')})")
-        print(f"  Open: Rs {res['open']:.2f} | Close: Rs {res['close']:.2f} | Change: Rs {res['close']-res['open']:+.2f}")
-    else:
-        print(f"🔮 FUTURE PREDICTION - {city} ({target_date.strftime('%Y-%m-%d')})")
-        print(f"  Predicted Open: Rs {res['open']:.2f}")
-        print(f"  Predicted Close: Rs {res['close']:.2f}")
+        # Predict
+        predicted_open = float(open_data['model'].predict(X_open_scaled)[0])
+        predicted_close = float(close_data['model'].predict(X_close_scaled)[0])
         
-        # Calculate changes from LATEST prices
-        open_change = res['open'] - res['latest_open']
-        close_change = res['close'] - res['latest_close']
+        # Get latest actual data
+        latest_date = open_features_df.iloc[-1]['Date']
+        latest_open = df[df['Date'] == latest_date].iloc[0][f'{city_key}_Open']
+        latest_close = df[df['Date'] == latest_date].iloc[0][f'{city_key}_Close']
         
-        print(f"\n  📈 Expected Changes from Latest ({res['latest_date'].strftime('%Y-%m-%d')}):")
-        print(f"  Open:  {open_change:+.2f} (±{res['open_model_mae']:.2f}) → Rs {res['latest_open']:.2f} → Rs {res['open']:.2f}")
-        print(f"  Close: {close_change:+.2f} (±{res['close_model_mae']:.2f}) → Rs {res['latest_close']:.2f} → Rs {res['close']:.2f}")
-        
-        print(f"\n  Latest Data ({res['latest_date'].strftime('%Y-%m-%d')}): Open: Rs {res['latest_open']:.2f} | Close: Rs {res['latest_close']:.2f}")
-        print("\n  📊 Selected Models & Accuracy:")
-        open_r2 = f"{res['open_model_r2']:.4f}" if res['open_model_r2'] is not None else "N/A"
-        open_mae = f"Rs {res['open_model_mae']:.2f}" if res['open_model_mae'] is not None else "N/A"
-        close_r2 = f"{res['close_model_r2']:.4f}" if res['close_model_r2'] is not None else "N/A"
-        close_mae = f"Rs {res['close_model_mae']:.2f}" if res['close_model_mae'] is not None else "N/A"
-        print(f"  Open  - {res['open_model_type'].upper()} | R2: {open_r2} | MAE: {open_mae}")
-        print(f"  Close - {res['close_model_type'].upper()} | R2: {close_r2} | MAE: {close_mae}")
-    print("="*50)
+        return {
+            "city": city_key,
+            "date": date,
+            "type": "future",
+            "predictions": {
+                "open": round(predicted_open, 2),
+                "close": round(predicted_close, 2),
+                "expected_change": round(predicted_close - predicted_open, 2)
+            },
+            "currency": "PKR",
+            "latest_data": {
+                "date": latest_date.strftime('%Y-%m-%d'),
+                "open": round(float(latest_open), 2),
+                "close": round(float(latest_close), 2)
+            },
+            "model_info": {
+                "open": {
+                    "type": open_data['type'],
+                    "r2": round(open_data['r2'], 4),
+                    "mae": round(open_data['mae'], 2)
+                },
+                "close": {
+                    "type": close_data['type'],
+                    "r2": round(close_data['r2'], 4),
+                    "mae": round(close_data['mae'], 2)
+                }
+            }
+        }
     
-    if input("\nAnother prediction? (y/n): ").lower() != 'y': break
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}\n{traceback.format_exc()}")
 
-print("\n✅ Thank you for using the Hybrid Poultry Price Predictor!")
+
+@app.get("/debug")
+def debug_features(city: str, date: str, api_key: str):
+    """Debug endpoint to check feature generation"""
+    
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
+    city_key = None
+    for key in models.keys():
+        if key.lower() == city.lower():
+            city_key = key
+            break
+    
+    if not city_key:
+        raise HTTPException(status_code=404, detail=f"City not found")
+    
+    try:
+        open_data = models[city_key]['Open']
+        close_data = models[city_key]['Close']
+        
+        open_features_df = feature_data[city_key]['Open']
+        close_features_df = feature_data[city_key]['Close']
+        
+        open_row = open_features_df.iloc[-1]
+        close_row = close_features_df.iloc[-1]
+        
+        return {
+            "city": city_key,
+            "date": date,
+            "open_features": {
+                "expected": open_data['features'],
+                "count": len(open_data['features']),
+                "values": open_row[open_data['features']].tolist(),
+                "first_5": dict(zip(open_data['features'][:5], open_row[open_data['features'][:5]].tolist()))
+            },
+            "close_features": {
+                "expected": close_data['features'],
+                "count": len(close_data['features']),
+                "values": close_row[close_data['features']].tolist(),
+                "first_5": dict(zip(close_data['features'][:5], close_row[close_data['features'][:5]].tolist()))
+            },
+            "latest_date": open_row['Date'].strftime('%Y-%m-%d'),
+            "csv_info": {
+                "total_rows": len(df),
+                "latest_date": df['Date'].max().strftime('%Y-%m-%d')
+            }
+        }
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=f"Debug error: {str(e)}\n{traceback.format_exc()}")
