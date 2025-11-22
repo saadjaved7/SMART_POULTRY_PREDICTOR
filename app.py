@@ -92,7 +92,7 @@ print("\n💾 Saving combined Lahore + Rawalpindi model file...")
 try:
     os.makedirs("models_selected", exist_ok=True)
     joblib.dump(master_models, "models_selected/lahore_rawalpindi_models.joblib")
-    print("✅ Saved as: models_selected\\lahore_rawalpindi_models.joblib")
+    print("✅ Saved as: models_selected/lahore_rawalpindi_models.joblib")
 except Exception:
     # ignore if not writable in environment
     pass
@@ -221,8 +221,9 @@ def predict_future_prices(city, target_date):
             result['doc'] = latest_row[f'{city}_DOC']
         return result
 
-    # Get latest row and latest values
+    # Get the actual latest row first
     latest_row = df[df['Date'] == latest_date].iloc[0]
+    
     result['latest_date'] = latest_date
     result['latest_open'] = latest_row[f'{city}_Open']
     result['latest_close'] = latest_row[f'{city}_Close']
@@ -231,13 +232,16 @@ def predict_future_prices(city, target_date):
     if f'{city}_DOC' in latest_row and pd.notna(latest_row[f'{city}_DOC']):
         result['latest_doc'] = latest_row[f'{city}_DOC']
 
-    # Get historical data for feature computation - USE last 50 values exactly
+    # Get historical data for feature computation - use last 49 values + append the actual latest
     historical_data = {}
     for price_type in ['Open', 'Close', 'FarmRate', 'DOC']:
         col = f'{city}_{price_type}'
         if col in df.columns:
-            # Use last 50 values (dropna) - this was the mismatch fix
-            hist_vals = df[col].dropna().values.tolist()[-50:]
+            # Get last 49 historical values, then append the TRUE latest value
+            hist_vals = df[col].iloc[:-1].dropna().values.tolist()[-49:]
+            actual_latest = latest_row[col]
+            if pd.notna(actual_latest):
+                hist_vals.append(actual_latest)
             historical_data[price_type] = hist_vals
 
     predictions = {
