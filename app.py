@@ -5,6 +5,8 @@ import pandas as pd
 from datetime import datetime
 import os
 import hashlib
+import warnings
+warnings.filterwarnings('ignore')
 
 app = FastAPI(title="Smart Poultry Prediction API")
 
@@ -39,7 +41,13 @@ df.ffill(inplace=True)
 
 cities = ['Rawalpindi', 'Lahore']
 
-print(f"✅ Loaded CSV with {len(df)} rows. Latest date: {df['Date'].max()}")
+# Print the same banner as your predict.py startup
+print("="*70)
+print("🐔 HYBRID CITY-WISE PREDICTOR (XGB / RF / MLP)")
+print("="*70)
+print("\n🎯 Features: Lag, MA, EMA, Momentum, Volatility, Trend, Cross-city lags, Time")
+print("🎯 Price Types: Open, Close, FarmRate, DOC")
+print("="*70)
 
 # =====================================================
 # LOAD MODELS - match predict.py
@@ -78,6 +86,16 @@ for city in cities:
             # store with lowercase keys like predict.py
             models.setdefault(city, {})[price_type.lower()] = entry
             print(f"   {price_type}: {entry['type'].upper()} | R2={entry['r2']:.4f} | MAE={entry['mae']:.2f}")
+
+print("\n💾 Saving combined Lahore + Rawalpindi model file...")
+# Save only if not already saved in your environment (safe no-op if file exists)
+try:
+    os.makedirs("models_selected", exist_ok=True)
+    joblib.dump(master_models, "models_selected/lahore_rawalpindi_models.joblib")
+    print("✅ Saved as: models_selected\\lahore_rawalpindi_models.joblib")
+except Exception:
+    # ignore if not writable in environment
+    pass
 
 print("\n✅ Models ready. You can start predictions now.")
 print("=" * 70)
@@ -251,14 +269,19 @@ def predict_future_prices(city, target_date):
                     if other_col in df.columns:
                         feat_dict[col_name] = df[other_col].dropna().iloc[-1]
 
-            X_dict = {feat: feat_dict.get(feat, 0) for feat in entry['features']}
-            X = pd.DataFrame([X_dict])[entry['features']].values
+            # Build DataFrame with feature names (matches training)
+            X_df = pd.DataFrame([feat_dict])
+            # Ensure column order matches
+            X_df = X_df.reindex(columns=entry['features'], fill_value=0)
 
             model, scaler = load_model_entry(entry)
             if entry['type'] == 'mlp' and scaler is not None:
-                X = scaler.transform(X)
+                # scale preserving column names
+                X_input = scaler.transform(X_df)
+            else:
+                X_input = X_df.values
 
-            base_prediction = model.predict(X)[0]
+            base_prediction = model.predict(X_input)[0]
 
             # volatility from last 7 predicted/actual values
             recent_vals = values_series[-7:] if len(values_series) >= 7 else values_series
@@ -283,13 +306,9 @@ def predict_future_prices(city, target_date):
     return result
 
 # =====================================================
-# FLATTENED VS-CODE STYLE TEXT BUILDER
+# FLATTENED VS-CODE STYLE TEXT BUILDER (with emojis to match your console)
 # =====================================================
 def build_vscode_text(city, date_str, res):
-    """
-    Build the exact VS Code style multiline text and return it.
-    Uses 2 decimal formatting and same lines as predict.py.
-    """
     lines = []
     if res['type'] == 'historical':
         lines.append(f"📅 HISTORICAL DATA - {city} ({date_str})")
@@ -309,7 +328,6 @@ def build_vscode_text(city, date_str, res):
         if 'doc' in res:
             lines.append(f"  Predicted DOC: Rs {res['doc']:.2f}")
         lines.append("")  # blank line
-        # Expected changes from latest
         latest_date_str = res['latest_date'].strftime('%Y-%m-%d') if 'latest_date' in res else ''
         lines.append(f"  📈 Expected Changes from Latest ({latest_date_str}):")
         open_change = res['open'] - res['latest_open']
@@ -323,7 +341,6 @@ def build_vscode_text(city, date_str, res):
             doc_change = res['doc'] - res['latest_doc']
             lines.append(f"  DOC: {doc_change:+.2f} (±{res['doc_model_mae']:.2f}) → Rs {res['latest_doc']:.2f} → Rs {res['doc']:.2f}")
 
-    # join with newlines and keep same separators shown in VS Code printout
     return "\n".join(lines)
 
 # =====================================================
