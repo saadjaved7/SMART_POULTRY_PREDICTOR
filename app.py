@@ -142,6 +142,7 @@ def compute_features_from_series(city, price_type, values_series, date):
 def predict_future_prices(city, target_date):
     """EXACT COPY of predict_future_prices from predict.py"""
     if city not in models:
+        print(f"❌ City {city} not in models. Available: {list(models.keys())}")
         return None
     
     # Check if historical data exists
@@ -159,6 +160,9 @@ def predict_future_prices(city, target_date):
     result = {'type': 'future'}
     latest_date = df['Date'].max()
     days_ahead = (target_date - latest_date).days
+    
+    print(f"🔍 Predicting {days_ahead} days ahead for {city}")
+    print(f"🔍 Available model keys for {city}: {list(models[city].keys())}")
     
     # Get the actual latest row first
     latest_row = df[df['Date'] == latest_date].iloc[0]
@@ -196,11 +200,18 @@ def predict_future_prices(city, target_date):
         current_date = current_date + pd.Timedelta(days=1)
         
         for price_type in ['Open', 'Close', 'FarmRate', 'DOC']:
-            pt = price_type.lower()
-            if pt not in models[city]:
+            # Check both lowercase and capitalized versions
+            model_key = None
+            if price_type in models[city]:
+                model_key = price_type
+            elif price_type.lower() in models[city]:
+                model_key = price_type.lower()
+            
+            if model_key is None:
+                print(f"⚠️  Skipping {price_type} - not found in models[{city}]")
                 continue
             
-            entry = models[city][pt]
+            entry = models[city][model_key]
             
             # Build features from accumulated predictions
             values_series = predictions[price_type]
@@ -243,10 +254,12 @@ def predict_future_prices(city, target_date):
             
             # Store only final prediction
             if day == days_ahead:
+                pt = price_type.lower()
                 result[pt] = prediction
                 result[f'{pt}_model_type'] = entry['type']
                 result[f'{pt}_model_r2'] = entry['r2']
                 result[f'{pt}_model_mae'] = entry['mae']
+                print(f"✅ Predicted {price_type}: {prediction:.2f}")
     
     return result
 
