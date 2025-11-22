@@ -87,21 +87,11 @@ for city in cities:
             models.setdefault(city, {})[price_type.lower()] = entry
             print(f"   {price_type}: {entry['type'].upper()} | R2={entry['r2']:.4f} | MAE={entry['mae']:.2f}")
 
-print("\n💾 Saving combined Lahore + Rawalpindi model file...")
-# Save only if not already saved in your environment (safe no-op if file exists)
-try:
-    os.makedirs("models_selected", exist_ok=True)
-    joblib.dump(master_models, "models_selected/lahore_rawalpindi_models.joblib")
-    print("✅ Saved as: models_selected/lahore_rawalpindi_models.joblib")
-except Exception:
-    # ignore if not writable in environment
-    pass
-
-print("\n✅ Models ready. You can start predictions now.")
+print("\n💾 Models ready for predictions")
 print("=" * 70)
 
 # =====================================================
-# PREDICTION FUNCTIONS - match predict.py
+# PREDICTION FUNCTIONS - match predict.py EXACTLY
 # =====================================================
 def load_model_entry(entry):
     model = entry.get('model', None)
@@ -109,14 +99,19 @@ def load_model_entry(entry):
     return model, scaler
 
 def compute_features_from_series(city, price_type, values_series, date):
+    """
+    Compute all required features from a series of recent values
+    values_series: list/array of recent prices (at least 30 values)
+    """
     features = {}
+    
     # Lag features - use most recent values
     for lag in range(1, 8):
         if lag < len(values_series):
             features[f'lag_{lag}'] = values_series[-lag-1]
         else:
             features[f'lag_{lag}'] = values_series[-1]
-
+    
     # Moving averages
     for window in [3, 7, 14, 30]:
         if len(values_series) >= window:
@@ -125,75 +120,75 @@ def compute_features_from_series(city, price_type, values_series, date):
         else:
             features[f'ma_{window}'] = np.mean(values_series)
             features[f'std_{window}'] = np.std(values_series)
-
+    
     # EMA - weighted towards recent values
     if len(values_series) >= 7:
         ema_7 = pd.Series(values_series).ewm(span=7, adjust=False).mean().iloc[-1]
         features['ema_7'] = ema_7
     else:
         features['ema_7'] = values_series[-1]
-
+    
     if len(values_series) >= 14:
         ema_14 = pd.Series(values_series).ewm(span=14, adjust=False).mean().iloc[-1]
         features['ema_14'] = ema_14
     else:
         features['ema_14'] = values_series[-1]
-
+    
     # Percentage changes
     if len(values_series) >= 2:
         features['pct_change_1'] = (values_series[-1] - values_series[-2]) / values_series[-2] if values_series[-2] != 0 else 0
     else:
         features['pct_change_1'] = 0
-
+    
     if len(values_series) >= 8:
         features['pct_change_7'] = (values_series[-1] - values_series[-8]) / values_series[-8] if values_series[-8] != 0 else 0
     else:
         features['pct_change_7'] = 0
-
+    
     # Momentum
     if len(values_series) >= 4:
         features['momentum_3'] = values_series[-1] - values_series[-4]
     else:
         features['momentum_3'] = 0
-
+    
     if len(values_series) >= 8:
         features['momentum_7'] = values_series[-1] - values_series[-8]
     else:
         features['momentum_7'] = 0
-
+    
     # Volatility (using high_low_diff from Open/Close)
     features['high_low_diff'] = 0
     features['volatility_7'] = 0
-
+    
     # Time features
     features['day_of_week'] = date.dayofweek
     features['day_of_month'] = date.day
     features['month'] = date.month
     features['quarter'] = date.quarter
-
+    
     # Trend features
     if len(values_series) >= 7:
         features['trend_7'] = np.polyfit(range(7), values_series[-7:], 1)[0]
     else:
         features['trend_7'] = 0
-
+    
     if len(values_series) >= 14:
         features['trend_14'] = np.polyfit(range(14), values_series[-14:], 1)[0]
     else:
         features['trend_14'] = 0
-
+    
     return features
 
 def predict_future_prices(city, target_date):
-    # deterministic seed identical to predict.py
+    # 🔥 CRITICAL: Use deterministic hash for consistent seeds across runs
     seed_str = f"{city}_{target_date.strftime('%Y-%m-%d')}"
     seed_value = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
     np.random.seed(seed_value)
-
+    
     if city not in models:
         return None
-
-    # historical check
+    
+    # Check if historical data exists
     historical = df[df['Date'] == target_date]
     if not historical.empty and pd.notna(historical.iloc[0][f'{city}_Open']):
         row = historical.iloc[0]
@@ -203,14 +198,14 @@ def predict_future_prices(city, target_date):
         if f'{city}_DOC' in row and pd.notna(row[f'{city}_DOC']):
             result['doc'] = row[f'{city}_DOC']
         return result
-
+    
+    # ITERATIVE MULTI-STEP FORECASTING
     result = {'type': 'future'}
     latest_date = df['Date'].max()
     days_ahead = (target_date - latest_date).days
-
-    # handle target_date before or equal latest_date (sensible behavior)
+    
+    # Handle target_date before or equal latest_date
     if days_ahead <= 0:
-        # if same day and no historical value, still attempt to return latest values
         latest_row = df[df['Date'] == latest_date].iloc[0]
         result['type'] = 'historical'
         result['open'] = latest_row[f'{city}_Open']
@@ -220,7 +215,7 @@ def predict_future_prices(city, target_date):
         if f'{city}_DOC' in latest_row and pd.notna(latest_row[f'{city}_DOC']):
             result['doc'] = latest_row[f'{city}_DOC']
         return result
-
+    
     # Get the actual latest row first
     latest_row = df[df['Date'] == latest_date].iloc[0]
     
@@ -231,7 +226,7 @@ def predict_future_prices(city, target_date):
         result['latest_farmrate'] = latest_row[f'{city}_FarmRate']
     if f'{city}_DOC' in latest_row and pd.notna(latest_row[f'{city}_DOC']):
         result['latest_doc'] = latest_row[f'{city}_DOC']
-
+    
     # Get historical data for feature computation - use last 49 values + append the actual latest
     historical_data = {}
     for price_type in ['Open', 'Close', 'FarmRate', 'DOC']:
@@ -243,77 +238,83 @@ def predict_future_prices(city, target_date):
             if pd.notna(actual_latest):
                 hist_vals.append(actual_latest)
             historical_data[price_type] = hist_vals
-
+    
+    # Predict iteratively for each day
     predictions = {
         'Open': historical_data.get('Open', []).copy(),
         'Close': historical_data.get('Close', []).copy(),
         'FarmRate': historical_data.get('FarmRate', []).copy(),
         'DOC': historical_data.get('DOC', []).copy()
     }
-
+    
     current_date = latest_date
     for day in range(1, days_ahead + 1):
         current_date = current_date + pd.Timedelta(days=1)
-
+        
         for price_type in ['Open', 'Close', 'FarmRate', 'DOC']:
             pt = price_type.lower()
             if pt not in models[city]:
                 continue
-
+            
             entry = models[city][pt]
-
+            
+            # Build features from accumulated predictions
             values_series = predictions[price_type]
             feat_dict = compute_features_from_series(city, price_type, values_series, current_date)
-
+            
             # Cross-city features (use latest available)
             for other_city in [c for c in cities if c != city]:
                 col_name = f'{other_city}_lag1'
-                if col_name in entry.get('features', []):
+                if col_name in entry['features']:
                     other_col = f'{other_city}_{price_type}'
                     if other_col in df.columns:
                         feat_dict[col_name] = df[other_col].dropna().iloc[-1]
-
-            # Build DataFrame with feature names (matches training)
-            X_df = pd.DataFrame([feat_dict])
-            # Ensure column order matches
-            X_df = X_df.reindex(columns=entry['features'], fill_value=0)
-
+            
+            # Ensure all features are present
+            X_dict = {feat: feat_dict.get(feat, 0) for feat in entry['features']}
+            X = pd.DataFrame([X_dict])[entry['features']].values
+            
             model, scaler = load_model_entry(entry)
             if entry['type'] == 'mlp' and scaler is not None:
-                # scale preserving column names
-                X_input = scaler.transform(X_df)
-            else:
-                X_input = X_df.values
-
-            base_prediction = model.predict(X_input)[0]
-
-            # volatility from last 7 predicted/actual values
+                X = scaler.transform(X)
+            
+            base_prediction = model.predict(X)[0]
+            
+            # Add realistic market noise based on recent volatility
+            # Calculate volatility from last 7 days
             recent_vals = values_series[-7:] if len(values_series) >= 7 else values_series
             volatility = np.std(recent_vals) if len(recent_vals) > 1 else entry['mae']
-
-            # noise multiplier is 0.3 as in your predict.py
+            
+            # Add random noise proportional to volatility (±0.5 * volatility)
+            # This simulates natural market fluctuations
             noise = np.random.normal(0, volatility * 0.3)
             prediction = base_prediction + noise
-
+            
+            # Ensure prediction doesn't deviate too much from recent trend
+            # Keep within ±2*MAE of base prediction
             max_deviation = entry['mae'] * 2
             prediction = np.clip(prediction, base_prediction - max_deviation, base_prediction + max_deviation)
+            
+            # Ensure non-negative prices
             prediction = max(prediction, 0)
-
+            
             predictions[price_type].append(prediction)
-
+            
+            # Store only final prediction
             if day == days_ahead:
                 result[pt] = prediction
                 result[f'{pt}_model_type'] = entry['type']
                 result[f'{pt}_model_r2'] = entry['r2']
                 result[f'{pt}_model_mae'] = entry['mae']
-
+    
     return result
 
 # =====================================================
-# FLATTENED VS-CODE STYLE TEXT BUILDER (with emojis to match your console)
+# VS-CODE STYLE TEXT BUILDER
 # =====================================================
 def build_vscode_text(city, date_str, res):
     lines = []
+    lines.append("="*60)
     if res['type'] == 'historical':
         lines.append(f"📅 HISTORICAL DATA - {city} ({date_str})")
         lines.append(f"  Open:  Rs {res['open']:.2f}")
@@ -331,7 +332,7 @@ def build_vscode_text(city, date_str, res):
             lines.append(f"  Predicted FarmRate: Rs {res['farmrate']:.2f}")
         if 'doc' in res:
             lines.append(f"  Predicted DOC: Rs {res['doc']:.2f}")
-        lines.append("")  # blank line
+        lines.append("")
         latest_date_str = res['latest_date'].strftime('%Y-%m-%d') if 'latest_date' in res else ''
         lines.append(f"  📈 Expected Changes from Latest ({latest_date_str}):")
         open_change = res['open'] - res['latest_open']
@@ -344,7 +345,8 @@ def build_vscode_text(city, date_str, res):
         if 'doc' in res and 'latest_doc' in res:
             doc_change = res['doc'] - res['latest_doc']
             lines.append(f"  DOC: {doc_change:+.2f} (±{res['doc_model_mae']:.2f}) → Rs {res['latest_doc']:.2f} → Rs {res['doc']:.2f}")
-
+    
+    lines.append("="*60)
     return "\n".join(lines)
 
 # =====================================================
@@ -371,15 +373,24 @@ def home():
 
         latest_data[city] = city_data
 
+    # Get base URL from request or use default
+    base_url = "https://smart-poultry-predictor-6gca.onrender.com"
+    
     return {
         "message": "🐔 Smart Poultry Prediction API - Exact Match with predict.py",
+        "status": "✅ Online and Ready",
         "available_cities": cities,
         "latest_prices": latest_data,
         "csv_rows": len(df),
         "csv_latest_date": df['Date'].max().strftime('%Y-%m-%d'),
         "models_loaded": list(models.keys()),
-        "note": "Uses identical prediction logic from predict.py",
-        "example": "/predict_date?city=Rawalpindi&date=2025-11-29&api_key=mysecretkey123"
+        "endpoints": {
+            "home": f"{base_url}/",
+            "predict": f"{base_url}/predict_date?city=CITY&date=YYYY-MM-DD&api_key=mysecretkey123",
+            "example_rawalpindi": f"{base_url}/predict_date?city=Rawalpindi&date=2025-11-29&api_key=mysecretkey123",
+            "example_lahore": f"{base_url}/predict_date?city=Lahore&date=2025-12-01&api_key=mysecretkey123"
+        },
+        "note": "🔥 Uses identical prediction logic from predict.py with deterministic seeding"
     }
 
 @app.get("/predict_date")
@@ -427,7 +438,6 @@ def predict_date(city: str, date: str, api_key: str):
 
             # Build VS Code style text
             result_text = build_vscode_text(city_key, date, res)
-
             result_struct['result'] = result_text
             return result_struct
 
