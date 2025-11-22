@@ -400,6 +400,38 @@ def predict_date(city: str, date: str, api_key: str):
         import traceback
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}\n{traceback.format_exc()}")
 
+@app.get("/debug_models")
+def debug_models(api_key: str):
+    """Debug endpoint to see model structure"""
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
+    debug_info = {}
+    for city in models.keys():
+        debug_info[city] = {
+            "keys": list(models[city].keys()),
+            "details": {}
+        }
+        for key in models[city].keys():
+            entry = models[city][key]
+            debug_info[city]["details"][key] = {
+                "type": entry.get('type', 'unknown'),
+                "r2": entry.get('r2', 0),
+                "mae": entry.get('mae', 0),
+                "has_model": entry.get('model') is not None,
+                "has_scaler": entry.get('scaler') is not None,
+                "num_features": len(entry.get('features', []))
+            }
+    
+    return {
+        "models_loaded": debug_info,
+        "df_info": {
+            "total_rows": len(df),
+            "latest_date": df['Date'].max().strftime('%Y-%m-%d'),
+            "columns": list(df.columns)
+        }
+    }
+
 @app.get("/compare")
 def compare_predictions(city: str, date: str, api_key: str):
     """Compare predictions with actual latest data"""
