@@ -5,6 +5,9 @@ import pandas as pd
 from datetime import datetime
 import os
 
+# NEW: Add this import for deterministic hashing
+import hashlib
+
 app = FastAPI(title="Smart Poultry Prediction API")
 
 API_KEY = "mysecretkey123"
@@ -178,11 +181,11 @@ def compute_features_from_series(city, price_type, values_series, date):
     
     return features
 
-# EXACT COPY from predict.py lines 219-315
+# UPDATED: Fixed seed for deterministic predictions (same as predict.py)
 def predict_future_prices(city, target_date):
-    # FIX RANDOM SEED for deterministic predictions
-    # This ensures same predictions every time for same date+city
-    seed_value = hash(f"{city}_{target_date.strftime('%Y-%m-%d')}") % (2**32)
+    # 🔥 UPDATED: Use deterministic hash for consistent seeds across runs
+    seed_str = f"{city}_{target_date.strftime('%Y-%m-%d')}"
+    seed_value = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
     np.random.seed(seed_value)
     
     if city not in models:
@@ -435,4 +438,4 @@ def predict_date(city: str, date: str, api_key: str):
     
     except Exception as e:
         import traceback
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}\n{traceback.format_exc()}")
+       
