@@ -181,9 +181,9 @@ def compute_features_from_series(city, price_type, values_series, date):
     
     return features
 
-# UPDATED: Fixed seed for deterministic predictions (same as predict.py)
+# CORRECTED: Now uses the EXACT deterministic seed from predict.py
 def predict_future_prices(city, target_date):
-    # 🔥 UPDATED: Use deterministic hash for consistent seeds across runs
+    # 🔥 FIXED: Use deterministic hash for consistent seeds across runs (matches predict.py)
     seed_str = f"{city}_{target_date.strftime('%Y-%m-%d')}"
     seed_value = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
     np.random.seed(seed_value)
@@ -414,6 +414,7 @@ def predict_date(city: str, date: str, api_key: str):
                         "type": res[f'{price_type}_model_type'],
                         "r2": round(float(res[f'{price_type}_model_r2']), 4),
                         "mae": round(float(res[f'{price_type}_model_mae']), 2)
+                    
                     }
                     
                     # Calculate expected changes
@@ -439,3 +440,4 @@ def predict_date(city: str, date: str, api_key: str):
     except Exception as e:
         import traceback
        
+
