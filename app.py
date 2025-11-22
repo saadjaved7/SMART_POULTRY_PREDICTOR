@@ -10,9 +10,8 @@ app = FastAPI(title="Smart Poultry Prediction API")
 API_KEY = "mysecretkey123"
 
 # =====================================================
-# LOAD CSV DATA - EXACTLY LIKE predict.py
+# LOAD CSV DATA - EXACTLY LIKE predict.py LINE BY LINE
 # =====================================================
-CSV_FILE = "agbro_combined_cleaned.csv"
 CSV_PATHS = [
     "agbro_combined_cleaned.csv",
     "data/agbro_combined_cleaned.csv",
@@ -20,30 +19,31 @@ CSV_PATHS = [
     "./data/agbro_combined_cleaned.csv"
 ]
 
+CSV_FILE = None
 for path in CSV_PATHS:
     if os.path.exists(path):
         CSV_FILE = path
         break
 
-if not os.path.exists(CSV_FILE):
-    raise Exception(f"❌ CSV file not found: {CSV_FILE}")
+if CSV_FILE is None:
+    raise Exception(f"❌ CSV file not found")
 
-# Load and clean data exactly like predict.py
+# EXACT COPY from predict.py lines 12-18
 df = pd.read_csv(CSV_FILE, parse_dates=["Date"], dayfirst=True)
 df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
+
+# --- Clean column names: strip spaces and remove internal spaces ---
 df.columns = df.columns.str.strip().str.replace(" ", "")
 df = df.sort_values('Date').reset_index(drop=True)
 df.ffill(inplace=True)
+
+cities = ['Rawalpindi', 'Lahore']
 
 print(f"✅ Loaded CSV with {len(df)} rows. Latest date: {df['Date'].max()}")
 
 # =====================================================
 # LOAD MODELS - EXACTLY LIKE predict.py
 # =====================================================
-cities = ['Rawalpindi', 'Lahore']
-MODEL_FILE = "lahore_rawalpindi_models.joblib"
-
-# Try different paths
 MODEL_PATHS = [
     "lahore_rawalpindi_models.joblib",
     "models_selected/lahore_rawalpindi_models.joblib",
@@ -51,48 +51,57 @@ MODEL_PATHS = [
     "./models_selected/lahore_rawalpindi_models.joblib"
 ]
 
-master_models = {}
+MODEL_FILE = None
 for path in MODEL_PATHS:
     if os.path.exists(path):
         MODEL_FILE = path
         break
 
-if not os.path.exists(MODEL_FILE):
-    raise Exception(f"❌ Model file not found: {MODEL_FILE}")
+if MODEL_FILE is None:
+    raise Exception(f"❌ Model file not found")
 
-try:
+# Load master_models EXACTLY like predict.py line 56-59
+master_models = {}
+if os.path.exists(MODEL_FILE):
+    print("🔄 Master joblib found! Loading Lahore + Rawalpindi models...")
     master_models = joblib.load(MODEL_FILE)
-    print(f"✅ Loaded master models from: {MODEL_FILE}")
+
+# Build models dict EXACTLY like predict.py lines 89-100
+models = {}
+print("\n🎯 LOADING/TRAINING MODELS PER CITY")
+
+for city in cities:
+    print(f"\n📍 {city}")
+    print("-" * 60)
     
-    # CRITICAL: Convert to lowercase keys like predict.py does
-    models = {}
-    for city in cities:
-        if city not in master_models:
-            print(f"⚠️  City {city} not in master_models")
-            continue
-        
-        models[city] = {}
-        for price_type in ['Open', 'Close', 'FarmRate', 'DOC']:
-            if price_type in master_models[city]:
-                entry = master_models[city][price_type]
-                models[city][price_type.lower()] = entry  # Store with lowercase key
-                print(f"✅ Loaded {city} {price_type}: {entry['type'].upper()} | R2={entry['r2']:.4f} | MAE={entry['mae']:.2f}")
-    
-    print(f"✅ Models ready with cities: {list(models.keys())}")
-    
-except Exception as e:
-    raise Exception(f"❌ Failed to load models: {str(e)}")
+    for price_type in ['Open', 'Close', 'FarmRate', 'DOC']:
+        # Check if model is already saved in master joblib
+        if city in master_models and price_type in master_models[city]:
+            print(f"   ✅ Loaded {city} {price_type} from master file")
+            entry = master_models[city][price_type]
+            # CRITICAL: Store with LOWERCASE key like predict.py line 95
+            models.setdefault(city, {})[price_type.lower()] = entry
+            print(f"   {price_type}: {entry['type'].upper()} | R2={entry['r2']:.4f} | MAE={entry['mae']:.2f}")
+
+print("\n✅ Models ready. You can start predictions now.")
+print("=" * 70)
 
 # =====================================================
-# HELPER FUNCTIONS - EXACT COPY FROM predict.py
+# PREDICTION FUNCTIONS - EXACT COPY FROM predict.py
 # =====================================================
+
+# EXACT COPY from predict.py lines 142-145
 def load_model_entry(entry):
     model = entry.get('model', None)
     scaler = entry.get('scaler', None)
     return model, scaler
 
+# EXACT COPY from predict.py lines 147-217
 def compute_features_from_series(city, price_type, values_series, date):
-    """Compute all required features from a series of recent values"""
+    """
+    Compute all required features from a series of recent values
+    values_series: list/array of recent prices (at least 30 values)
+    """
     features = {}
     
     # Lag features - use most recent values
@@ -100,7 +109,7 @@ def compute_features_from_series(city, price_type, values_series, date):
         if lag < len(values_series):
             features[f'lag_{lag}'] = values_series[-lag-1]
         else:
-            features[f'lag_{lag}'] = values_series[-1]
+            features[f'lag_{lag}'] = values_series[-1]  # Use last available instead of first
     
     # Moving averages
     for window in [3, 7, 14, 30]:
@@ -146,7 +155,7 @@ def compute_features_from_series(city, price_type, values_series, date):
     else:
         features['momentum_7'] = 0
     
-    # Volatility
+    # Volatility (using high_low_diff from Open/Close)
     features['high_low_diff'] = 0
     features['volatility_7'] = 0
     
@@ -169,8 +178,13 @@ def compute_features_from_series(city, price_type, values_series, date):
     
     return features
 
+# EXACT COPY from predict.py lines 219-315
 def predict_future_prices(city, target_date):
-    """EXACT COPY of predict_future_prices from predict.py"""
+    # FIX RANDOM SEED for deterministic predictions
+    # This ensures same predictions every time for same date+city
+    seed_value = hash(f"{city}_{target_date.strftime('%Y-%m-%d')}") % (2**32)
+    np.random.seed(seed_value)
+    
     if city not in models:
         return None
     
@@ -201,11 +215,12 @@ def predict_future_prices(city, target_date):
     if f'{city}_DOC' in latest_row and pd.notna(latest_row[f'{city}_DOC']):
         result['latest_doc'] = latest_row[f'{city}_DOC']
     
-    # Get historical data for feature computation
+    # Get historical data for feature computation - use last 49 values + append the actual latest
     historical_data = {}
     for price_type in ['Open', 'Close', 'FarmRate', 'DOC']:
         col = f'{city}_{price_type}'
         if col in df.columns:
+            # Get last 49 historical values, then append the TRUE latest value
             hist_vals = df[col].iloc[:-1].dropna().values.tolist()[-49:]
             actual_latest = latest_row[col]
             if pd.notna(actual_latest):
@@ -235,7 +250,7 @@ def predict_future_prices(city, target_date):
             values_series = predictions[price_type]
             feat_dict = compute_features_from_series(city, price_type, values_series, current_date)
             
-            # Cross-city features
+            # Cross-city features (use latest available)
             for other_city in [c for c in cities if c != city]:
                 col_name = f'{other_city}_lag1'
                 if col_name in entry['features']:
@@ -253,15 +268,22 @@ def predict_future_prices(city, target_date):
             
             base_prediction = model.predict(X)[0]
             
-            # Add realistic market noise
+            # Add realistic market noise based on recent volatility
+            # Calculate volatility from last 7 days
             recent_vals = values_series[-7:] if len(values_series) >= 7 else values_series
             volatility = np.std(recent_vals) if len(recent_vals) > 1 else entry['mae']
             
+            # Add random noise proportional to volatility (±0.5 * volatility)
+            # This simulates natural market fluctuations
             noise = np.random.normal(0, volatility * 0.3)
             prediction = base_prediction + noise
             
+            # Ensure prediction doesn't deviate too much from recent trend
+            # Keep within ±2*MAE of base prediction
             max_deviation = entry['mae'] * 2
             prediction = np.clip(prediction, base_prediction - max_deviation, base_prediction + max_deviation)
+            
+            # Ensure non-negative prices
             prediction = max(prediction, 0)
             
             predictions[price_type].append(prediction)
@@ -276,7 +298,7 @@ def predict_future_prices(city, target_date):
     return result
 
 # =====================================================
-# ROUTES
+# FASTAPI ROUTES
 # =====================================================
 @app.get("/")
 def home():
@@ -300,14 +322,14 @@ def home():
         latest_data[city] = city_data
     
     return {
-        "message": "🐔 Smart Poultry Prediction API (Matching predict.py)",
+        "message": "🐔 Smart Poultry Prediction API - Exact Match with predict.py",
         "available_cities": cities,
         "latest_prices": latest_data,
-        "csv_loaded": True,
         "csv_rows": len(df),
         "csv_latest_date": df['Date'].max().strftime('%Y-%m-%d'),
         "models_loaded": list(models.keys()),
-        "example": "https://smart-poultry-predictor-6gca.onrender.com/predict_date?city=Rawalpindi&date=2025-11-29&api_key=mysecretkey123"
+        "note": "Uses identical prediction logic from predict.py",
+        "example": "/predict_date?city=Rawalpindi&date=2025-11-29&api_key=mysecretkey123"
     }
 
 @app.get("/predict_date")
@@ -315,8 +337,9 @@ def predict_date(city: str, date: str, api_key: str):
     if api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
     
+    # Find matching city (case insensitive)
     city_key = None
-    for key in models.keys():
+    for key in cities:
         if key.lower() == city.lower():
             city_key = key
             break
@@ -330,6 +353,7 @@ def predict_date(city: str, date: str, api_key: str):
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     
     try:
+        # Call EXACT same function as predict.py
         res = predict_future_prices(city_key, target_date)
         
         if res is None:
@@ -355,7 +379,7 @@ def predict_date(city: str, date: str, api_key: str):
             
             return result
         
-        else:  # future prediction
+        else:  # future prediction - format like predict.py output
             result = {
                 "city": city_key,
                 "date": date,
@@ -377,7 +401,7 @@ def predict_date(city: str, date: str, api_key: str):
             if 'latest_doc' in res:
                 result['latest_data']['doc'] = round(float(res['latest_doc']), 2)
             
-            # Add predictions and calculate changes
+            # Add predictions for all price types
             for price_type in ['open', 'close', 'farmrate', 'doc']:
                 if price_type in res:
                     result['predictions'][price_type] = round(float(res[price_type]), 2)
@@ -401,7 +425,7 @@ def predict_date(city: str, date: str, api_key: str):
                             "to": round(float(res[price_type]), 2)
                         }
             
-            # Calculate expected change for Open to Close
+            # Expected change for Open to Close
             if 'open' in result['predictions'] and 'close' in result['predictions']:
                 result['predictions']['expected_change'] = round(
                     result['predictions']['close'] - result['predictions']['open'], 2
@@ -411,36 +435,4 @@ def predict_date(city: str, date: str, api_key: str):
     
     except Exception as e:
         import traceback
-        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}\n{traceback.format_exc()}")
-
-@app.get("/debug_models")
-def debug_models(api_key: str):
-    """Debug endpoint to see model structure"""
-    if api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API key")
-    
-    debug_info = {}
-    for city in models.keys():
-        debug_info[city] = {
-            "keys": list(models[city].keys()),
-            "details": {}
-        }
-        for key in models[city].keys():
-            entry = models[city][key]
-            debug_info[city]["details"][key] = {
-                "type": entry.get('type', 'unknown'),
-                "r2": entry.get('r2', 0),
-                "mae": entry.get('mae', 0),
-                "has_model": entry.get('model') is not None,
-                "has_scaler": entry.get('scaler') is not None,
-                "num_features": len(entry.get('features', []))
-            }
-    
-    return {
-        "models_loaded": debug_info,
-        "df_info": {
-            "total_rows": len(df),
-            "latest_date": df['Date'].max().strftime('%Y-%m-%d'),
-            "columns": list(df.columns)
-        }
-    }
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}\n{traceback.format_exc()}")
