@@ -352,6 +352,50 @@ def build_vscode_text(city, date_str, res):
 # =====================================================
 # FASTAPI ROUTES
 # =====================================================
+@app.get("/diagnostic")
+def diagnostic():
+    """Check model file integrity and system info"""
+    try:
+        # Check model file hash
+        model_hash = "unknown"
+        if MODEL_FILE and os.path.exists(MODEL_FILE):
+            with open(MODEL_FILE, 'rb') as f:
+                model_hash = hashlib.md5(f.read()).hexdigest()
+        
+        # Check CSV hash
+        csv_hash = "unknown"
+        if CSV_FILE and os.path.exists(CSV_FILE):
+            with open(CSV_FILE, 'rb') as f:
+                csv_hash = hashlib.md5(f.read()).hexdigest()
+        
+        # Test prediction consistency
+        test_city = "Rawalpindi"
+        test_date = pd.to_datetime("2025-11-29")
+        test_result = predict_future_prices(test_city, test_date)
+        
+        return {
+            "status": "✅ Diagnostic Complete",
+            "model_file": MODEL_FILE,
+            "model_hash": model_hash,
+            "expected_model_hash": "45dc6a8366cff752c2d6f4a2e83a52c9",
+            "model_match": model_hash == "45dc6a8366cff752c2d6f4a2e83a52c9",
+            "csv_file": CSV_FILE,
+            "csv_hash": csv_hash,
+            "csv_rows": len(df),
+            "csv_latest_date": df['Date'].max().strftime('%Y-%m-%d'),
+            "test_prediction": {
+                "city": test_city,
+                "date": "2025-11-29",
+                "doc": round(float(test_result.get('doc', 0)), 2) if test_result else None,
+                "expected_doc": 144.12,
+                "doc_match": abs(round(float(test_result.get('doc', 0)), 2) - 144.12) < 0.5 if test_result else False
+            },
+            "numpy_version": np.__version__,
+            "pandas_version": pd.__version__
+        }
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
 @app.get("/")
 def home():
     latest_data = {}
