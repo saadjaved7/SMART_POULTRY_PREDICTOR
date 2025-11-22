@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import datetime
 import os
 import hashlib
+import traceback
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -13,11 +14,11 @@ app = FastAPI(title="Smart Poultry Prediction API")
 API_KEY = "mysecretkey123"
 
 # =====================================================
-# LOAD CSV DATA - match predict.py
+# LOAD CSV DATA - Use root path for GitHub/Render deployment
 # =====================================================
 CSV_PATHS = [
-    "agbro_combined_cleaned.csv",
-    "data/agbro_combined_cleaned.csv",
+    "agbro_combined_cleaned.csv",  # Root path for GitHub/Render
+    "data/agbro_combined_cleaned.csv",  # Fallback for local development
     "./agbro_combined_cleaned.csv",
     "./data/agbro_combined_cleaned.csv"
 ]
@@ -29,28 +30,42 @@ for path in CSV_PATHS:
         break
 
 if CSV_FILE is None:
-    raise Exception("❌ CSV file not found")
+    raise Exception("CSV file not found in any expected location")
 
 df = pd.read_csv(CSV_FILE, parse_dates=["Date"], dayfirst=True)
 df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
 
-# --- Clean column names: strip spaces and remove internal spaces ---
+# Clean column names: strip spaces and remove internal spaces
 df.columns = df.columns.str.strip().str.replace(" ", "")
 df = df.sort_values('Date').reset_index(drop=True)
 df.ffill(inplace=True)
 
+# Verify critical columns exist
+required_cols = ['Rawalpindi_DOC', 'Lahore_DOC', 'Rawalpindi_Open', 'Rawalpindi_Close']
+missing_cols = [col for col in required_cols if col not in df.columns]
+if missing_cols:
+    raise Exception(f"Missing required columns: {missing_cols}")
+
 cities = ['Rawalpindi', 'Lahore']
 
-# Print the same banner as your predict.py startup
+# Print startup banner
 print("="*70)
-print("🐔 HYBRID CITY-WISE PREDICTOR (XGB / RF / MLP)")
+print("HYBRID CITY-WISE PREDICTOR (XGB / RF / MLP)")
 print("="*70)
-print("\n🎯 Features: Lag, MA, EMA, Momentum, Volatility, Trend, Cross-city lags, Time")
-print("🎯 Price Types: Open, Close, FarmRate, DOC")
+print("\nFeatures: Lag, MA, EMA, Momentum, Volatility, Trend, Cross-city lags, Time")
+print("Price Types: Open, Close, FarmRate, DOC")
 print("="*70)
+print(f"\nCSV Loaded: {CSV_FILE}")
+print(f"Total rows: {len(df)}")
+print(f"Date range: {df['Date'].min().strftime('%Y-%m-%d')} to {df['Date'].max().strftime('%Y-%m-%d')}")
+print(f"\nLast row data (Latest prices):")
+last_row = df.iloc[-1]
+print(f"  Date: {last_row['Date'].strftime('%Y-%m-%d')}")
+print(f"  Rawalpindi - Open: {last_row.get('Rawalpindi_Open', 'N/A')}, Close: {last_row.get('Rawalpindi_Close', 'N/A')}, DOC: {last_row.get('Rawalpindi_DOC', 'N/A')}")
+print(f"  Lahore - Open: {last_row.get('Lahore_Open', 'N/A')}, Close: {last_row.get('Lahore_Close', 'N/A')}, DOC: {last_row.get('Lahore_DOC', 'N/A')}")
 
 # =====================================================
-# LOAD MODELS - match predict.py
+# LOAD MODELS
 # =====================================================
 MODEL_PATHS = [
     "lahore_rawalpindi_models.joblib",
@@ -66,32 +81,31 @@ for path in MODEL_PATHS:
         break
 
 if MODEL_FILE is None:
-    raise Exception("❌ Model file not found")
+    raise Exception("Model file not found")
 
 master_models = {}
 if os.path.exists(MODEL_FILE):
-    print("🔄 Master joblib found! Loading Lahore + Rawalpindi models...")
+    print("\nLoading Lahore + Rawalpindi models...")
     master_models = joblib.load(MODEL_FILE)
 
 models = {}
-print("\n🎯 LOADING/TRAINING MODELS PER CITY")
+print("\nLOADING MODELS PER CITY")
 
 for city in cities:
-    print(f"\n📍 {city}")
+    print(f"\n{city}")
     print("-" * 60)
     for price_type in ['Open', 'Close', 'FarmRate', 'DOC']:
         if city in master_models and price_type in master_models[city]:
-            print(f"   ✅ Loaded {city} {price_type} from master file")
+            print(f"   Loaded {city} {price_type} from master file")
             entry = master_models[city][price_type]
-            # store with lowercase keys like predict.py
             models.setdefault(city, {})[price_type.lower()] = entry
             print(f"   {price_type}: {entry['type'].upper()} | R2={entry['r2']:.4f} | MAE={entry['mae']:.2f}")
 
-print("\n💾 Models ready for predictions")
+print("\nModels ready for predictions")
 print("=" * 70)
 
 # =====================================================
-# PREDICTION FUNCTIONS - match predict.py EXACTLY
+# PREDICTION FUNCTIONS - EXACT MATCH WITH predict.py
 # =====================================================
 def load_model_entry(entry):
     model = entry.get('model', None)
@@ -180,7 +194,7 @@ def compute_features_from_series(city, price_type, values_series, date):
     return features
 
 def predict_future_prices(city, target_date):
-    # 🔥 CRITICAL: Use deterministic hash for consistent seeds across runs
+    # Deterministic hash for consistent seeds across runs
     seed_str = f"{city}_{target_date.strftime('%Y-%m-%d')}"
     seed_value = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
     np.random.seed(seed_value)
@@ -281,17 +295,14 @@ def predict_future_prices(city, target_date):
             base_prediction = model.predict(X)[0]
             
             # Add realistic market noise based on recent volatility
-            # Calculate volatility from last 7 days
             recent_vals = values_series[-7:] if len(values_series) >= 7 else values_series
             volatility = np.std(recent_vals) if len(recent_vals) > 1 else entry['mae']
             
-            # Add random noise proportional to volatility (±0.5 * volatility)
-            # This simulates natural market fluctuations
+            # Add random noise proportional to volatility
             noise = np.random.normal(0, volatility * 0.3)
             prediction = base_prediction + noise
             
             # Ensure prediction doesn't deviate too much from recent trend
-            # Keep within ±2*MAE of base prediction
             max_deviation = entry['mae'] * 2
             prediction = np.clip(prediction, base_prediction - max_deviation, base_prediction + max_deviation)
             
@@ -310,13 +321,13 @@ def predict_future_prices(city, target_date):
     return result
 
 # =====================================================
-# VS-CODE STYLE TEXT BUILDER
+# TEXT BUILDER FOR CONSOLE-STYLE OUTPUT
 # =====================================================
 def build_vscode_text(city, date_str, res):
     lines = []
     lines.append("="*60)
     if res['type'] == 'historical':
-        lines.append(f"📅 HISTORICAL DATA - {city} ({date_str})")
+        lines.append(f"HISTORICAL DATA - {city} ({date_str})")
         lines.append(f"  Open:  Rs {res['open']:.2f}")
         lines.append(f"  Close: Rs {res['close']:.2f}")
         if 'farmrate' in res:
@@ -325,7 +336,7 @@ def build_vscode_text(city, date_str, res):
             lines.append(f"  DOC: Rs {res['doc']:.2f}")
         lines.append(f"  Daily Change: Rs {res['close'] - res['open']:+.2f}")
     else:
-        lines.append(f"🔮 FUTURE PREDICTION - {city} ({date_str})")
+        lines.append(f"FUTURE PREDICTION - {city} ({date_str})")
         lines.append(f"  Predicted Open:  Rs {res['open']:.2f}")
         lines.append(f"  Predicted Close: Rs {res['close']:.2f}")
         if 'farmrate' in res:
@@ -334,17 +345,17 @@ def build_vscode_text(city, date_str, res):
             lines.append(f"  Predicted DOC: Rs {res['doc']:.2f}")
         lines.append("")
         latest_date_str = res['latest_date'].strftime('%Y-%m-%d') if 'latest_date' in res else ''
-        lines.append(f"  📈 Expected Changes from Latest ({latest_date_str}):")
+        lines.append(f"  Expected Changes from Latest ({latest_date_str}):")
         open_change = res['open'] - res['latest_open']
-        lines.append(f"  Open:  {open_change:+.2f} (±{res['open_model_mae']:.2f}) → Rs {res['latest_open']:.2f} → Rs {res['open']:.2f}")
+        lines.append(f"  Open:  {open_change:+.2f} (±{res['open_model_mae']:.2f}) -> Rs {res['latest_open']:.2f} -> Rs {res['open']:.2f}")
         close_change = res['close'] - res['latest_close']
-        lines.append(f"  Close: {close_change:+.2f} (±{res['close_model_mae']:.2f}) → Rs {res['latest_close']:.2f} → Rs {res['close']:.2f}")
+        lines.append(f"  Close: {close_change:+.2f} (±{res['close_model_mae']:.2f}) -> Rs {res['latest_close']:.2f} -> Rs {res['close']:.2f}")
         if 'farmrate' in res and 'latest_farmrate' in res:
             farmrate_change = res['farmrate'] - res['latest_farmrate']
-            lines.append(f"  FarmRate: {farmrate_change:+.2f} (±{res['farmrate_model_mae']:.2f}) → Rs {res['latest_farmrate']:.2f} → Rs {res['farmrate']:.2f}")
+            lines.append(f"  FarmRate: {farmrate_change:+.2f} (±{res['farmrate_model_mae']:.2f}) -> Rs {res['latest_farmrate']:.2f} -> Rs {res['farmrate']:.2f}")
         if 'doc' in res and 'latest_doc' in res:
             doc_change = res['doc'] - res['latest_doc']
-            lines.append(f"  DOC: {doc_change:+.2f} (±{res['doc_model_mae']:.2f}) → Rs {res['latest_doc']:.2f} → Rs {res['doc']:.2f}")
+            lines.append(f"  DOC: {doc_change:+.2f} (±{res['doc_model_mae']:.2f}) -> Rs {res['latest_doc']:.2f} -> Rs {res['doc']:.2f}")
     
     lines.append("="*60)
     return "\n".join(lines)
@@ -354,7 +365,7 @@ def build_vscode_text(city, date_str, res):
 # =====================================================
 @app.get("/diagnostic")
 def diagnostic():
-    """Check model file integrity and system info"""
+    """Check system integrity and CSV data"""
     try:
         # Check model file hash
         model_hash = "unknown"
@@ -368,30 +379,49 @@ def diagnostic():
             with open(CSV_FILE, 'rb') as f:
                 csv_hash = hashlib.md5(f.read()).hexdigest()
         
-        # Test prediction consistency
+        # Get last row of CSV
+        last_row = df.iloc[-1]
+        last_row_data = {
+            'Date': last_row['Date'].strftime('%Y-%m-%d'),
+            'Rawalpindi_DOC': float(last_row.get('Rawalpindi_DOC', 0)),
+            'Lahore_DOC': float(last_row.get('Lahore_DOC', 0)),
+            'Rawalpindi_Open': float(last_row.get('Rawalpindi_Open', 0)),
+            'Rawalpindi_Close': float(last_row.get('Rawalpindi_Close', 0)),
+            'Rawalpindi_FarmRate': float(last_row.get('Rawalpindi_FarmRate', 0))
+        }
+        
+        # Test prediction
         test_city = "Rawalpindi"
         test_date = pd.to_datetime("2025-11-29")
         test_result = predict_future_prices(test_city, test_date)
         
         return {
-            "status": "✅ Diagnostic Complete",
-            "model_file": MODEL_FILE,
-            "model_hash": model_hash,
-            "expected_model_hash": "45dc6a8366cff752c2d6f4a2e83a52c9",
-            "model_match": model_hash == "45dc6a8366cff752c2d6f4a2e83a52c9",
-            "csv_file": CSV_FILE,
-            "csv_hash": csv_hash,
-            "csv_rows": len(df),
-            "csv_latest_date": df['Date'].max().strftime('%Y-%m-%d'),
+            "status": "Diagnostic Complete",
+            "files": {
+                "model_file": MODEL_FILE,
+                "model_hash": model_hash,
+                "expected_model_hash": "45dc6a8366cff752c2d6f4a2e83a52c9",
+                "model_match": model_hash == "45dc6a8366cff752c2d6f4a2e83a52c9",
+                "csv_file": CSV_FILE,
+                "csv_hash": csv_hash,
+                "csv_rows": len(df)
+            },
+            "csv_last_row": last_row_data,
+            "csv_columns": df.columns.tolist(),
+            "expected_rawalpindi_doc": 130.5,
+            "doc_matches": last_row_data['Rawalpindi_DOC'] == 130.5,
             "test_prediction": {
                 "city": test_city,
                 "date": "2025-11-29",
                 "doc": round(float(test_result.get('doc', 0)), 2) if test_result else None,
-                "expected_doc": 144.12,
-                "doc_match": abs(round(float(test_result.get('doc', 0)), 2) - 144.12) < 0.5 if test_result else False
+                "open": round(float(test_result.get('open', 0)), 2) if test_result else None,
+                "close": round(float(test_result.get('close', 0)), 2) if test_result else None,
+                "farmrate": round(float(test_result.get('farmrate', 0)), 2) if test_result else None
             },
-            "numpy_version": np.__version__,
-            "pandas_version": pd.__version__
+            "versions": {
+                "numpy": np.__version__,
+                "pandas": pd.__version__
+            }
         }
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}
@@ -417,24 +447,25 @@ def home():
 
         latest_data[city] = city_data
 
-    # Get base URL from request or use default
     base_url = "https://smart-poultry-predictor-6gca.onrender.com"
     
     return {
-        "message": "🐔 Smart Poultry Prediction API - Exact Match with predict.py",
-        "status": "✅ Online and Ready",
+        "message": "Smart Poultry Prediction API",
+        "status": "Online",
         "available_cities": cities,
         "latest_prices": latest_data,
-        "csv_rows": len(df),
-        "csv_latest_date": df['Date'].max().strftime('%Y-%m-%d'),
-        "models_loaded": list(models.keys()),
+        "data_info": {
+            "csv_rows": len(df),
+            "latest_date": df['Date'].max().strftime('%Y-%m-%d'),
+            "models_loaded": list(models.keys())
+        },
         "endpoints": {
             "home": f"{base_url}/",
+            "diagnostic": f"{base_url}/diagnostic",
             "predict": f"{base_url}/predict_date?city=CITY&date=YYYY-MM-DD&api_key=mysecretkey123",
             "example_rawalpindi": f"{base_url}/predict_date?city=Rawalpindi&date=2025-11-29&api_key=mysecretkey123",
             "example_lahore": f"{base_url}/predict_date?city=Lahore&date=2025-12-01&api_key=mysecretkey123"
-        },
-        "note": "🔥 Uses identical prediction logic from predict.py with deterministic seeding"
+        }
     }
 
 @app.get("/predict_date")
@@ -442,7 +473,7 @@ def predict_date(city: str, date: str, api_key: str):
     if api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
-    # case-insensitive match
+    # Case-insensitive match
     city_key = None
     for key in cities:
         if key.lower() == city.lower():
@@ -462,7 +493,7 @@ def predict_date(city: str, date: str, api_key: str):
         if res is None:
             raise HTTPException(status_code=500, detail="Prediction error")
 
-        # Prepare response body (structured + text)
+        # Prepare response body
         if res['type'] == 'historical':
             result_struct = {
                 "city": city_key,
@@ -480,13 +511,12 @@ def predict_date(city: str, date: str, api_key: str):
             if 'doc' in res:
                 result_struct['predictions']['doc'] = round(float(res['doc']), 2)
 
-            # Build VS Code style text
             result_text = build_vscode_text(city_key, date, res)
             result_struct['result'] = result_text
             return result_struct
 
         else:
-            # future
+            # Future prediction
             result_struct = {
                 "city": city_key,
                 "date": date,
@@ -526,19 +556,17 @@ def predict_date(city: str, date: str, api_key: str):
                             "to": round(float(res[price_type]), 2)
                         }
 
-            # expected change open->close
+            # Expected change open->close
             if 'open' in result_struct['predictions'] and 'close' in result_struct['predictions']:
                 result_struct['predictions']['expected_change'] = round(
                     result_struct['predictions']['close'] - result_struct['predictions']['open'], 2
                 )
 
-            # Build VS Code style text
             result_text = build_vscode_text(city_key, date, res)
             result_struct['result'] = result_text
 
             return result_struct
 
     except Exception as e:
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
